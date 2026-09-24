@@ -48,6 +48,10 @@ uv run ruff format --check . && uv run ruff check .
 
 CI (`.github/workflows/ci.yml`) runs the tests on Linux and Windows against the MAST_common branch of the same name when one exists, else `master`, and lints on Linux.
 
+## Decision records
+
+Design rationale lives in `docs/decisions/`, one dated file per decision, in the format MAST_provisioning defined (summarized in `docs/decisions/README.md`). `ls docs/decisions/2*.md` is the index.
+
 ## Related repos
 
 - [MAST_common](https://github.com/The-MAST-project/MAST_common) — the config schema (`config/supervisor.py`), the port constants, `opmode`, and the process helpers this repo builds on.
