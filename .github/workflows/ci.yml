@@ -1,0 +1,103 @@
+# Continuous integration for MAST_supervision.
+#
+# The programs run only on Windows (unit and spec machines), but the design keeps every
+# phase a pure function of injected probes, so most of the suite is platform-neutral and
+# the win32 side is tested against fakes. Matrixed over both: Linux proves nothing
+# imports win32 or tkinter at module scope, Windows proves the real bindings load.
+#
+# Layout reproduces a MAST machine's <top>, as MAST_unit's workflow does -- two sibling
+# checkouts with the workspace root standing in for mast.pth:
+#
+#   <workspace>/
+#     common/        <- MAST_common: the paired branch of the same name, else master
+#     supervision/   <- this repo; the repo root IS the `supervision` package
+#
+# Dependencies are installed in ONE uv resolve over MAST_common's CI pins and this
+# repo's pyproject.toml, the same joint resolve mast-clone performs on the fleet.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Check out MAST_supervision
+        uses: actions/checkout@v7
+        with:
+          path: supervision
+
+      - name: Resolve the paired MAST_common branch
+        id: common-ref
+        shell: bash
+        env:
+          PAIRED: ${{ github.head_ref || github.ref_name }}
+        run: |
+          remote=https://github.com/The-MAST-project/MAST_common.git
+          if [ -n "$PAIRED" ] && [ -n "$(git ls-remote --heads "$remote" "$PAIRED")" ]; then
+            echo "ref=$PAIRED" >> "$GITHUB_OUTPUT"
+            echo "MAST_common: building against the paired branch '$PAIRED'"
+          else
+            echo "ref=master" >> "$GITHUB_OUTPUT"
+            echo "MAST_common: no branch named '$PAIRED'; building against master"
+          fi
+
+      - name: Check out MAST_common as a sibling
+        uses: actions/checkout@v7
+        with:
+          repository: The-MAST-project/MAST_common
+          ref: ${{ steps.common-ref.outputs.ref }}
+          path: common
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          # The fleet's uv, from MAST_provisioning's mast-repos.tsv `#!uv-version`.
+          version: "0.11.33"
+
+      - name: Install dependencies
+        shell: bash
+        run: >
+          uv pip install --system
+          -r common/requirements-ci.txt
+          -r supervision/pyproject.toml
+          --group supervision/pyproject.toml:dev
+
+      - name: Tests
+        working-directory: supervision
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -ra
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.33"
+
+      - name: Format
+        run: uv run --only-group dev ruff format --check .
+
+      - name: Lint
+        run: uv run --only-group dev ruff check .

@@ -1,0 +1,42 @@
+# Dependency manifest for MAST_supervision.
+#
+# This repo is not built or installed. Like every MAST repo it is cloned under <top>
+# (as <top>/supervision/, the repo root being the `supervision` package) and imported
+# through the mast.pth that MAST_provisioning writes into the role's one shared venv.
+# Hence `package = false` and no [build-system].
+#
+# mast-clone resolves every cloned repo's manifest in ONE `uv pip install`, so this
+# file shares a venv with MAST_unit's (or MAST_spec's) requirements.txt. The pin rule
+# follows from that: a library another MAST repo also uses gets a lower bound only, and
+# that repo's exact pin decides the version; a library only this repo uses is pinned
+# exactly here. Exact pins on shared libraries would have to move in lockstep across
+# repos, or the fleet install fails.
+#
+# uv.lock makes this repo's own CI and dev venvs reproducible. The fleet never reads
+# it -- a unit runs whatever the joint resolve produced.
+
+[project]
+name = "mast-supervision"
+version = "0.0.0"
+description = "mast-service and mast-supervisor: process supervision for MAST unit and spec machines"
+requires-python = ">=3.12"
+dependencies = [
+    # Shared with MAST_unit / MAST_spec: lower bounds at the fleet's current pins.
+    "fastapi>=0.139.0",
+    "uvicorn>=0.50.1",
+    "pydantic>=2.13.4",
+    "pywin32>=312; sys_platform == 'win32'",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    # The fleet pin: formatter output differs between ruff versions.
+    "ruff==0.16.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

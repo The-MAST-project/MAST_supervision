@@ -1,0 +1,39 @@
+# Ruff configuration for MAST_supervision -- the MAST fleet standard, copied from
+# MAST_unit's ruff.toml so every repo formats and lints identically. The ruff version
+# is pinned in pyproject.toml's dev group.
+
+line-length = 125
+target-version = "py312"
+
+[lint]
+select = [
+    "F",   # Pyflakes (runtime errors)
+    "E",   # pycodestyle (formatting)
+    "W",   # pycodestyle warnings
+    "I",   # isort (import sorting)
+    "N",   # pep8-naming
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "C90", # mccabe complexity
+    "SIM", # flake8-simplify
+    "TID", # tidy imports
+]
+# As in MAST_common: the repo root IS the package, so N999 judges the checkout
+# directory's name, and any clone not named `supervision` (a `MAST_supervision`
+# checkout, a worktree) is reported as an invalid module name.
+ignore = ["N999"]
+
+[lint.mccabe]
+max-complexity = 10
+
+[lint.isort]
+# Both are our own packages, siblings under <top>; ruff's path-based resolver cannot
+# classify a sibling clone, so name them.
+known-first-party = ["common", "supervision"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
+docstring-code-format = true
