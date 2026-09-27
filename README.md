@@ -56,7 +56,9 @@ uv run ruff format --check . && uv run ruff check .
 
 `tests/conftest.py` makes every process launch raise (`subprocess`, `os`, `psutil.Popen`, and `win32process.CreateProcess` / `CreateProcessAsUser`), since the suite runs on machines where these programs drive hardware. It also redirects `common`'s `Filer` to a temp dir, which is what lets the tests import `common.config` on a Mac.
 
-CI (`.github/workflows/ci.yml`) runs the tests on Linux and Windows against the MAST_common branch of the same name when one exists, else `master`, and lints on Linux.
+CI (`.github/workflows/ci.yml`) runs the tests on Linux and Windows against the MAST_common branch named like the PR's head branch, else like its base branch, else `master`, and lints on Linux.
+
+**Supervisor work lands on `supervision-integration`, not `main`.** The supervisor needs MAST_common changes that are not yet on `master`, so both repos carry a `supervision-integration` branch: feature PRs target it here, CI pairs it with common's branch of the same name, and the two merge to `main` / `master` together.
 
 ## Decision records
 
