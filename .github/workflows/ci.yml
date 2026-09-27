@@ -9,7 +9,7 @@
 # checkouts with the workspace root standing in for mast.pth:
 #
 #   <workspace>/
-#     common/        <- MAST_common: the paired branch of the same name, else master
+#     common/        <- MAST_common: the branch named like this one's head, else its base, else master
 #     supervision/   <- this repo; the repo root IS the `supervision` package
 #
 # Dependencies are installed in ONE uv resolve over MAST_common's CI pins and this
@@ -18,7 +18,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # supervision-integration pairs with MAST_common's branch of the same name; the two
+    # merge to main / master together.
+    branches: [main, supervision-integration]
   pull_request:
 
 concurrency:
@@ -40,20 +42,26 @@ jobs:
         with:
           path: supervision
 
+      # The head branch's namesake first, then the base branch's -- so a PR into an
+      # integration branch builds against common's branch of that name even when its own
+      # head has no counterpart there -- then master.
       - name: Resolve the paired MAST_common branch
         id: common-ref
         shell: bash
         env:
-          PAIRED: ${{ github.head_ref || github.ref_name }}
+          HEAD: ${{ github.head_ref || github.ref_name }}
+          BASE: ${{ github.base_ref }}
         run: |
           remote=https://github.com/The-MAST-project/MAST_common.git
-          if [ -n "$PAIRED" ] && [ -n "$(git ls-remote --heads "$remote" "$PAIRED")" ]; then
-            echo "ref=$PAIRED" >> "$GITHUB_OUTPUT"
-            echo "MAST_common: building against the paired branch '$PAIRED'"
-          else
-            echo "ref=master" >> "$GITHUB_OUTPUT"
-            echo "MAST_common: no branch named '$PAIRED'; building against master"
-          fi
+          for candidate in "$HEAD" "$BASE"; do
+            if [ -n "$candidate" ] && [ -n "$(git ls-remote --heads "$remote" "$candidate")" ]; then
+              echo "ref=$candidate" >> "$GITHUB_OUTPUT"
+              echo "MAST_common: building against the paired branch '$candidate'"
+              exit 0
+            fi
+          done
+          echo "ref=master" >> "$GITHUB_OUTPUT"
+          echo "MAST_common: no branch named '$HEAD' or '$BASE'; building against master"
 
       - name: Check out MAST_common as a sibling
         uses: actions/checkout@v7
