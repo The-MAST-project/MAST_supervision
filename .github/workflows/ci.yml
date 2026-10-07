@@ -18,9 +18,7 @@ name: CI
 
 on:
   push:
-    # supervision-integration pairs with MAST_common's branch of the same name; the two
-    # merge to main / master together.
-    branches: [main, supervision-integration]
+    branches: [main]
   pull_request:
 
 concurrency:

@@ -13,7 +13,7 @@ The supervisor reports through three surfaces built on one snapshot: a small win
 
 | module | what |
 |---|---|
-| `state.py` | `SupervisorSnapshot`, the one model the window, heartbeat and status API render; its `severity` is the worst resource or process state, and `not_supervised` (VSCode under `automatic`, reported with no mode) is never a fault. Imports nothing from `common.config` |
+| `state.py` | `SupervisorSnapshot`, the one model the window, heartbeat and status API render; its `severity` is the worst resource or process state, and `not_supervised` (VSCode under `operated`, reported with no mode) is never a fault. Imports nothing from `common.config` |
 | `logsink.py` | `DequeHandler`, the bounded cross-thread buffer between the root logger and the window |
 | `gui_model.py` | `drain()`, the window's per-tick log drain, with no tkinter so it is tested on Linux |
 | `resources.py` | the network (config DB reachable), RAM-disk-and-indexes and share probes, and `ResourceTracker`, which waits each out for its budget and then lets the supervisor proceed degraded |
@@ -60,7 +60,7 @@ uv run ruff format --check . && uv run ruff check .
 
 CI (`.github/workflows/ci.yml`) runs the tests on Linux and Windows against the MAST_common branch named like the PR's head branch, else like its base branch, else `master`, and lints on Linux.
 
-**Supervisor work lands on `supervision-integration`, not `main`.** The supervisor needs MAST_common changes that are not yet on `master`, so both repos carry a `supervision-integration` branch: feature PRs target it here, CI pairs it with common's branch of the same name, and the two merge to `main` / `master` together.
+**Supervisor work lands on `main`.** A change that needs an unmerged MAST_common change goes on a branch named like common's, so CI pairs the two.
 
 ## Decision records
 
