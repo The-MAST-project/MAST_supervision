@@ -1,6 +1,7 @@
 ---
 decided: 2026-09-27
-status: accepted
+status: superseded
+superseded_by: 2026-10-07-supervisor-work-lands-on-main
 areas:
   - source-layout
   - reproducibility

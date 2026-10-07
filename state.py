@@ -33,7 +33,7 @@ class SupervisionMode(StrEnum):
 
 
 class OpMode(StrEnum):
-    AUTOMATIC = "automatic"
+    OPERATED = "operated"
     CONTROLLED = "controlled"
 
 
@@ -69,7 +69,7 @@ class ProcessState(StrEnum):
     HEALTHY = "healthy"
     UNHEALTHY = "unhealthy"
     CRASH_LOOPED = "crash_looped"
-    # Launched once and deliberately not watched (VSCode under `automatic`). Not running is
+    # Launched once and deliberately not watched (VSCode under `operated`). Not running is
     # its normal resting condition, so it is never a fault: a fleet view over /status that
     # reds out every developer machine is one nobody reads.
     NOT_SUPERVISED = "not_supervised"
