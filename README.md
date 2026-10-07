@@ -9,7 +9,15 @@ Process supervision for MAST unit and spec machines: two programs, one package.
 
 The supervisor reports through three surfaces built on one snapshot: a small window with a rolling log, a heartbeat block in the log file every five minutes, and `GET /mast/api/v1/supervisor/status` on port 8004.
 
-**Status: skeleton.** Nothing is implemented yet. The design is [`plans/supervisor-design.md`](https://github.com/The-MAST-project/mast-claude-config/blob/main/plans/supervisor-design.md) in mast-claude-config.
+**Status: stage 2 in progress** — the platform-neutral core, nothing yet runnable. Landed so far:
+
+| module | what |
+|---|---|
+| `state.py` | `SupervisorSnapshot`, the one model the window, heartbeat and status API render; its `severity` is the worst resource or process state, and `not_supervised` (VSCode under `operated`, reported with no mode) is never a fault. Imports nothing from `common.config` |
+| `logsink.py` | `DequeHandler`, the bounded cross-thread buffer between the root logger and the window |
+| `gui_model.py` | `drain()`, the window's per-tick log drain, with no tkinter so it is tested on Linux |
+
+The design is [`plans/supervisor-design.md`](https://github.com/The-MAST-project/mast-claude-config/blob/main/plans/supervisor-design.md) in mast-claude-config.
 
 ## Layout on a machine
 
@@ -46,7 +54,11 @@ PYTHONPATH=.. uv run pytest
 uv run ruff format --check . && uv run ruff check .
 ```
 
-CI (`.github/workflows/ci.yml`) runs the tests on Linux and Windows against the MAST_common branch of the same name when one exists, else `master`, and lints on Linux.
+`tests/conftest.py` makes every process launch raise (`subprocess`, `os`, `psutil.Popen`, and `win32process.CreateProcess` / `CreateProcessAsUser`), since the suite runs on machines where these programs drive hardware. It also redirects `common`'s `Filer` to a temp dir, which is what lets the tests import `common.config` on a Mac.
+
+CI (`.github/workflows/ci.yml`) runs the tests on Linux and Windows against the MAST_common branch named like the PR's head branch, else like its base branch, else `master`, and lints on Linux.
+
+**Supervisor work lands on `main`.** A change that needs an unmerged MAST_common change goes on a branch named like common's, so CI pairs the two.
 
 ## Decision records
 
