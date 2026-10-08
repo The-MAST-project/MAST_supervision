@@ -12,8 +12,9 @@
 # exactly here. Exact pins on shared libraries would have to move in lockstep across
 # repos, or the fleet install fails.
 #
-# uv.lock makes this repo's own CI and dev venvs reproducible. The fleet never reads
-# it -- a unit runs whatever the joint resolve produced.
+# uv.lock pins CI's lint job. The tests run in the joint install tools/dev-env.sh makes
+# (MAST_common's CI pins plus this file), and the fleet never reads the lock -- a unit
+# runs whatever the joint resolve produced.
 
 [project]
 name = "mast-supervision"

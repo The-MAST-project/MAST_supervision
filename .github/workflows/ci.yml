@@ -79,11 +79,7 @@ jobs:
 
       - name: Install dependencies
         shell: bash
-        run: >
-          uv pip install --system
-          -r common/requirements-ci.txt
-          -r supervision/pyproject.toml
-          --group supervision/pyproject.toml:dev
+        run: bash supervision/tools/dev-env.sh --system
 
       - name: Tests
         working-directory: supervision

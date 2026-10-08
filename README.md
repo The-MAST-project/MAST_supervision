@@ -43,9 +43,9 @@ Declared in `pyproject.toml` (not `requirements.txt`). On the fleet, `mast-clone
 
 - libraries another MAST repo also uses (fastapi, uvicorn, pydantic, pywin32) carry **lower bounds only**, and that repo's exact pin decides the version;
 - libraries only this repo uses are **pinned exactly** here;
-- `uv.lock` pins this repo's own CI and dev environments. **The fleet does not read it**: a unit runs whatever the joint resolve produced.
+- `uv.lock` pins the environment of CI's lint job (`uv run --only-group dev`). The tests run in the joint install `tools/dev-env.sh` makes, and **the fleet does not read the lock**: a unit runs whatever the joint resolve produced.
 
-`supervision` imports `common` but does not declare MAST_common's dependencies; on the fleet they come from the app's manifest, and in CI from `common/requirements-ci.txt`.
+`supervision` imports `common` but does not declare MAST_common's dependencies; on the fleet they come from the app's manifest, and in CI and development from `common/requirements-ci.txt`, through `tools/dev-env.sh`.
 
 ## Development
 
@@ -53,10 +53,12 @@ From a `<top>` holding `common/` and `supervision/`:
 
 ```sh
 cd supervision
-uv sync                      # dev venv from uv.lock
-PYTHONPATH=.. uv run pytest
-uv run ruff format --check . && uv run ruff check .
+tools/dev-env.sh             # .venv: MAST_common's CI pins + this manifest, one resolve, as CI installs
+PYTHONPATH=.. .venv/bin/python -m pytest
+.venv/bin/python -m ruff format --check . && .venv/bin/python -m ruff check .
 ```
+
+**Do not run `uv sync` here.** It rebuilds `.venv` to match `uv.lock` exactly, which removes MAST_common's dependencies, and the suite then cannot import `common`. Rerun `tools/dev-env.sh` to repair a venv it emptied.
 
 `tests/conftest.py` makes every process launch raise (`subprocess`, `os`, `psutil.Popen`, and `win32process.CreateProcess` / `CreateProcessAsUser`), since the suite runs on machines where these programs drive hardware. It also redirects `common`'s `Filer` to a temp dir, which is what lets the tests import `common.config` on a Mac.
 
