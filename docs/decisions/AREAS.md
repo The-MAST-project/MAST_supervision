@@ -11,6 +11,7 @@ across both clones finds both.
 | `reproducibility` | The same result twice: pins, locks, frozen caches (shared with MAST_provisioning) |
 | `dependency management` | How dependencies are declared, and how they coexist in the role's one shared venv |
 | `services` | The Windows service side: NSSM, session 0, what a service may start (shared with MAST_provisioning) |
+| `process-supervision` | Probing, adopting, restarting and stopping the programs the supervisor owns or watches |
 | `status-reporting` | What the supervisor reports and how bad it is: the snapshot, its severity, the surfaces that render it |
 | `resources` | The machine preconditions the supervisor waits on: network, RAM disk and indexes, share |
 
