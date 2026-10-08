@@ -18,6 +18,7 @@ The supervisor reports through three surfaces built on one snapshot: a small win
 | `gui_model.py` | `drain()`, the window's per-tick log drain, with no tkinter so it is tested on Linux |
 | `resources.py` | the network (config DB reachable), RAM-disk-and-indexes and share probes, and `ResourceTracker`, which waits each out for its budget and then lets the supervisor proceed degraded |
 | `clock.py` | the injected monotonic and wall clocks |
+| `probes.py` | the PWI4, PHD2, ps3cli and app health probes, each one bounded call against a local port with a timeout no stricter than the app's own client, imports no client of the programs it probes |
 
 The design is [`plans/supervisor-design.md`](https://github.com/The-MAST-project/mast-claude-config/blob/main/plans/supervisor-design.md) in mast-claude-config.
 

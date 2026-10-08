@@ -7,5 +7,6 @@
 - **What belongs in MAST_common instead:** anything another program imports — the `SupervisorConfig` schema, port constants, `opmode`, process helpers.
 - **Dependencies:** `pyproject.toml`. Lower bounds for libraries shared with another MAST repo, exact pins for ones only this repo uses; see `docs/decisions/2026-09-24-dependencies-in-pyproject-with-lower-bounds-on-shared-libraries.md`.
 - **Decision records:** one file per decision in `docs/decisions/`, in MAST_provisioning's format — read `docs/decisions/README.md` before writing one. Write a record whenever a change embodies a judgment call; `git grep -il '<symbol>' docs/decisions/` before changing code whose shape looks deliberate.
+- **Local HTTP never goes through a proxy:** the units carry `http_proxy`, so every request to `127.0.0.1` uses an opener with `ProxyHandler({})`. See `docs/decisions/2026-10-08-process-probes-report-health-with-client-matched-timeouts.md`.
 - **Tests never start a process:** `tests/conftest.py` makes every spawn entry point raise, `win32process` included. Allow one explicitly there if a test truly needs it; never remove the guard.
 - **Checks before done:** `uv run ruff format --check .`, `uv run ruff check .`, `PYTHONPATH=.. uv run pytest`.
