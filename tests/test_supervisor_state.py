@@ -34,11 +34,11 @@ def _snapshot(resources=(), processes=()) -> SupervisorSnapshot:
 
 
 def _process(state: ProcessState, name: str = "pwi4", mode: SupervisionMode = SupervisionMode.SUPERVISED) -> ProcessStatus:
-    return ProcessStatus(name=name, mode=mode, state=state)
+    return ProcessStatus(name=name, mode=mode, state=state, since=T0)
 
 
 def _vscode() -> ProcessStatus:
-    return ProcessStatus(name="vscode", mode=None, state=ProcessState.NOT_SUPERVISED)
+    return ProcessStatus(name="vscode", mode=None, state=ProcessState.NOT_SUPERVISED, since=T0)
 
 
 def _resource(state: ResourceState, name: str = "share") -> ResourceStatus:
@@ -87,7 +87,7 @@ def test_a_supervision_mode_is_not_not_supervised() -> None:
 
 def test_no_mode_is_only_for_not_supervised() -> None:
     with pytest.raises(ValidationError):
-        ProcessStatus(name="pwi4", mode=None, state=ProcessState.HEALTHY)
+        ProcessStatus(name="pwi4", mode=None, state=ProcessState.HEALTHY, since=T0)
 
 
 def test_a_disabled_program_is_not_reported() -> None:
@@ -138,3 +138,11 @@ def test_serializes_severity_for_the_status_api() -> None:
     dumped = _snapshot(processes=[_process(ProcessState.CRASH_LOOPED)]).model_dump(mode="json")
     assert dumped["severity"] == Severity.ERROR
     assert dumped["processes"][0]["state"] == "crash_looped"
+
+
+def test_a_program_blocked_by_another_session_is_an_error() -> None:
+    assert _snapshot(processes=[_process(ProcessState.BLOCKED)]).severity is Severity.ERROR
+
+
+def test_a_starting_program_is_a_warning() -> None:
+    assert _snapshot(processes=[_process(ProcessState.STARTING)]).severity is Severity.WARNING

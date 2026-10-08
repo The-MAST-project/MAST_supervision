@@ -66,9 +66,13 @@ class ResourceState(StrEnum):
 
 
 class ProcessState(StrEnum):
+    STARTING = "starting"  # spawned or adopted, not yet probed healthy
     HEALTHY = "healthy"
     UNHEALTHY = "unhealthy"
     CRASH_LOOPED = "crash_looped"
+    # A copy runs in another Windows login session: neither adopted nor killed, and no second
+    # copy is started beside it. Clears by itself once that copy exits.
+    BLOCKED = "blocked"
     # Launched once and deliberately not watched (VSCode under `operated`). Not running is
     # its normal resting condition, so it is never a fault: a fleet view over /status that
     # reds out every developer machine is one nobody reads.
@@ -82,8 +86,10 @@ class ProcessState(StrEnum):
 _PROCESS_SEVERITY = {
     ProcessState.HEALTHY: Severity.OK,
     ProcessState.NOT_SUPERVISED: Severity.OK,
+    ProcessState.STARTING: Severity.WARNING,
     ProcessState.UNHEALTHY: Severity.WARNING,
     ProcessState.CRASH_LOOPED: Severity.ERROR,
+    ProcessState.BLOCKED: Severity.ERROR,
 }
 
 
@@ -108,6 +114,7 @@ class ProcessStatus(_Frozen):
     restarts: int = 0
     last_exit_code: int | None = None
     detail: str = ""
+    since: AwareDatetime  # when the program entered its current state
 
     @model_validator(mode="after")
     def _mode_agrees_with_state(self) -> Self:
