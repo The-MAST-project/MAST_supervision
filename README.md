@@ -16,6 +16,8 @@ The supervisor reports through three surfaces built on one snapshot: a small win
 | `state.py` | `SupervisorSnapshot`, the one model the window, heartbeat and status API render; its `severity` is the worst resource or process state, and `not_supervised` (VSCode under `operated`, reported with no mode) is never a fault. Imports nothing from `common.config` |
 | `logsink.py` | `DequeHandler`, the bounded cross-thread buffer between the root logger and the window |
 | `gui_model.py` | `drain()`, the window's per-tick log drain, with no tkinter so it is tested on Linux |
+| `resources.py` | the network (config DB reachable), RAM-disk-and-indexes and share probes, and `ResourceTracker`, which waits each out for its budget and then lets the supervisor proceed degraded |
+| `clock.py` | the injected monotonic and wall clocks |
 
 The design is [`plans/supervisor-design.md`](https://github.com/The-MAST-project/mast-claude-config/blob/main/plans/supervisor-design.md) in mast-claude-config.
 
