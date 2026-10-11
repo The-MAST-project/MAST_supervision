@@ -28,6 +28,8 @@ dependencies = [
     "pydantic>=2.13.4",
     "psutil>=7.2.2",
     "pywin32>=312; sys_platform == 'win32'",
+    # Only this repo uses it: an exact pin. The window themes; gui.py falls back to plain ttk without it.
+    "ttkbootstrap==2.2.3",
 ]
 
 [dependency-groups]

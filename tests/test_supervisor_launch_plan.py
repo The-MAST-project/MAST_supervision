@@ -129,8 +129,8 @@ def test_the_plan_marks_a_missing_target() -> None:
     assert f"  MISSING: {TOP / 'mast-unit.code-workspace'}" in text
 
 
-@pytest.mark.parametrize("argv", [[], ["--no-gui"], ["--no-service"], ["--no-app"]])
-def test_without_a_window_or_service_the_console_flags_are_required(argv: list[str]) -> None:
+@pytest.mark.parametrize("argv", [[], ["--no-gui"], ["--no-app"], ["--no-gui", "--no-app"]])
+def test_until_the_service_exists_no_service_is_required(argv: list[str]) -> None:
     with pytest.raises(SystemExit) as raised:
         main(argv)
 

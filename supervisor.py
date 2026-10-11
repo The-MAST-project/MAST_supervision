@@ -207,6 +207,9 @@ class Supervisor:
         self._heartbeat_due = 0.0
         self.snapshot = self._build_snapshot()
 
+    def wall_clock(self) -> datetime:
+        return self._clock.wall()
+
     def run(self, stop: threading.Event) -> None:
         """Tick until ``stop`` is set. The programs are left running."""
         logger.info(f"supervisor starting: role={self._role} host={self._hostname} top={self._top}")
