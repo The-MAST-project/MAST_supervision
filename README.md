@@ -9,7 +9,7 @@ Process supervision for MAST unit and spec machines: two programs, one package.
 
 The supervisor reports through three surfaces built on one snapshot: a small window with a rolling log, a heartbeat block in the log file every five minutes, and `GET /mast/api/v1/supervisor/status` on port 8004.
 
-**Status: stage 3 in progress.** The loop runs in a console (`python -m supervision --no-gui --no-service`); the status API, the window and the service are still to come. Landed so far:
+**Status: stage 3 in progress.** The loop runs in a console (`python -m supervision --no-gui --no-service`) and serves `GET /status`; the window and the service are still to come. Landed so far:
 
 | module | what |
 |---|---|
@@ -24,9 +24,11 @@ The supervisor reports through three surfaces built on one snapshot: a small win
 | `locate.py` | where VSCode, PWI4 and ps3cli (and its catalog) are installed, when the configuration names no `exe` |
 | `programs.py` | what each configured program name means on a MAST machine (image, location, default arguments, probe), resolved into the rows the loop supervises and the lines `--dry-run` prints |
 | `heartbeat.py` | `render_heartbeat()`: the whole snapshot as one ASCII log record, at its severity |
-| `supervisor.py` | the loop: waits out the resources, loads the configuration on a backoff, supervises the programs, launches VSCode or the app, republishes the snapshot on change and on every heartbeat; stopping leaves the programs running |
+| `supervisor.py` | the loop: waits out the resources, loads the configuration on a backoff, supervises the programs, launches VSCode or the app, republishes the snapshot on change and on every heartbeat; stopping publishes `stopping` and leaves the programs running |
+| `api.py` | `GET /mast/api/v1/supervisor/status`: the latest snapshot in a `CanonicalResponse`, read-only, on uvicorn in a daemon thread, served from `starting` on |
+| `instance.py` | `claim_port()`: the status port is the one-supervisor-per-machine lock. A live supervisor on it aborts this one; a `stopping` one is waited for; a dead or wedged supervisor is killed and its programs adopted; a holder that is not a supervisor aborts this one |
 | `wiring.py` | the real configuration, probes and process API the loop is given; the tests give it fakes |
-| `__main__.py` | `--dry-run` prints the role, `opmode`, the programs and the launch; `--no-gui --no-service [--no-app]` runs the loop until Ctrl-C, logging to `mast-<role>-supervisor-log.txt` |
+| `__main__.py` | `--dry-run` prints the role, `opmode`, the programs and the launch; `--no-gui --no-service [--no-app]` claims port 8004, serves `/status` and runs the loop until Ctrl-C, logging to `mast-<role>-supervisor-log.txt`; it exits 1 when the port cannot be had |
 
 The design is [`plans/supervisor-design.md`](https://github.com/The-MAST-project/mast-claude-config/blob/main/plans/supervisor-design.md) in mast-claude-config.
 

@@ -2,10 +2,10 @@
 
 ``STARTING -> WAITING_FOR_RESOURCES -> LOADING_CONFIG -> SUPERVISING -> LAUNCHING_APP -> RUNNING``,
 or ``DEGRADED`` in place of ``RUNNING`` while a resource is short or the configuration came from
-its boot cache. One thread calls :meth:`Supervisor.tick` about once a second. A program's
-health probe runs on that program's own executor and never holds a tick up; the resource probes
-and the configuration load run on the loop thread, each bounded, so a tick on a machine whose
-network is down can take several seconds.
+its boot cache; ``STOPPING`` once asked to stop. One thread calls :meth:`Supervisor.tick` about
+once a second. A program's health probe runs on that program's own executor and never holds a
+tick up; the resource probes and the configuration load run on the loop thread, each bounded, so
+a tick on a machine whose network is down can take several seconds.
 
 **Nothing is fatal.** A resource still down after its budget is waited out and kept probing; a
 configuration that cannot be loaded is retried on a backoff; a program that cannot be found is
@@ -22,8 +22,8 @@ a row saying so. A supervisor that dies leaves a machine nobody can see.
 
 **The snapshot** is rebuilt every tick and published, by whole-reference assignment, when it
 differs from the last one -- and on every heartbeat even when it does not. So a ``taken_at``
-older than the heartbeat interval plus the longest tick (about ten seconds with the network
-down) means the loop has stopped, however quiet the night.
+older than the heartbeat interval plus the longest tick (``SupervisorSnapshot.is_stale``) means
+the loop has stopped, however quiet the night.
 
 **The configuration is watched.** Its generation, its degraded reason and this unit's
 maintenance flag are re-read on every resource poll, so a supervisor that started on the boot
@@ -210,11 +210,20 @@ class Supervisor:
     def run(self, stop: threading.Event) -> None:
         """Tick until ``stop`` is set. The programs are left running."""
         logger.info(f"supervisor starting: role={self._role} host={self._hostname} top={self._top}")
-        while True:
-            self.tick()
-            if stop.wait(TICK_SECONDS):
-                break
+        try:
+            while True:
+                self.tick()
+                if stop.wait(TICK_SECONDS):
+                    break
+        finally:
+            self._stopping()
+
+    def _stopping(self) -> None:
+        """Publish ``STOPPING`` so a supervisor starting meanwhile waits rather than aborts."""
         logger.info("supervisor stopping; the programs it owns are left running and are adopted on the next start")
+        now = self._clock.monotonic()
+        self._enter(Phase.STOPPING, now)
+        self._publish(now)
 
     def tick(self) -> None:
         now = self._clock.monotonic()
@@ -374,6 +383,7 @@ class Supervisor:
             phase=self._phase,
             hostname=self._hostname,
             role=self._role,
+            heartbeat_seconds=self._heartbeat_seconds(),
             opmode=loaded.opmode if loaded else None,
             in_maintenance=status.in_maintenance if status else None,
             config_generation=status.generation if status else None,
@@ -390,8 +400,10 @@ class Supervisor:
         if heartbeat:
             level, text = render_heartbeat(snapshot)
             logger.log(level, text)
-            interval = self._loaded.supervisor.heartbeat_interval_seconds if self._loaded else self._wiring.heartbeat_seconds
-            self._heartbeat_due = now + interval
+            self._heartbeat_due = now + self._heartbeat_seconds()
+
+    def _heartbeat_seconds(self) -> float:
+        return self._loaded.supervisor.heartbeat_interval_seconds if self._loaded else self._wiring.heartbeat_seconds
 
 
 def _content(snapshot: SupervisorSnapshot) -> dict[str, object]:

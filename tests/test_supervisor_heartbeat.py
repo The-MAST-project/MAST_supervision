@@ -31,6 +31,7 @@ def snapshot(resources=(), processes=(), **fields) -> SupervisorSnapshot:
         started_at=T0,
         phase=Phase.RUNNING,
         hostname="mast07",
+        heartbeat_seconds=300.0,
         role="unit",
         resources=tuple(resources),
         processes=tuple(processes),

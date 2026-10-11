@@ -19,11 +19,20 @@ Design: mast-claude-config ``plans/supervisor-design.md`` §2, §5-§7.
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import IntEnum, StrEnum
 from typing import Self
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, computed_field, model_validator
+
+# The longest a tick can take: resource probes and the configuration load run on the loop
+# thread, each bounded, and with the network down a tick can take several seconds.
+STALE_MARGIN_SECONDS = 10.0
+
+
+def is_stale(taken_at: datetime, heartbeat_seconds: float, now: datetime) -> bool:
+    """True when a snapshot taken at ``taken_at`` means its loop has stopped publishing."""
+    return now - taken_at > timedelta(seconds=heartbeat_seconds + STALE_MARGIN_SECONDS)
 
 
 class SupervisionMode(StrEnum):
@@ -53,6 +62,9 @@ class Phase(StrEnum):
     LAUNCHING_APP = "launching_app"
     RUNNING = "running"
     DEGRADED = "degraded"
+    # Asked to stop: the loop has ended and the port is about to be released. A supervisor
+    # starting meanwhile waits for the port instead of taking this one for a live peer.
+    STOPPING = "stopping"
 
 
 class ResourceState(StrEnum):
@@ -140,12 +152,19 @@ class SupervisorSnapshot(_Frozen):
     phase: Phase
     hostname: str
     role: str
+    # The interval in force: the snapshot is republished at least this often, so a reader
+    # judges staleness from taken_at plus this, plus the longest tick (STALE_MARGIN_SECONDS).
+    heartbeat_seconds: float
     opmode: OpMode | None = None
     in_maintenance: bool | None = None
     config_generation: int | None = None
     config_degraded_reason: str | None = None
     resources: tuple[ResourceStatus, ...] = ()
     processes: tuple[ProcessStatus, ...] = ()
+
+    def is_stale(self, now: datetime) -> bool:
+        """True when the loop that published this has stopped publishing."""
+        return is_stale(self.taken_at, self.heartbeat_seconds, now)
 
     @property
     def uptime(self) -> timedelta:
