@@ -11,6 +11,21 @@ runs on the program's own single-thread executor and is never started while the 
 is still running, so a slow probe delays only its own program. A restart is terminate, then
 kill once the grace has passed, then respawn after a backoff -- each step taken on a later tick.
 
+**Matching is by image name, and optionally by an argument.** PWI4 and ps3cli are their own
+images. The app is a ``python.exe`` like the supervisor itself and anything else run from the
+venv, so it is matched only when its command line also names its ``app.py``: adopting the
+wrong Python would supervise the wrong program.
+
+**A copy that launched another copy is the same program, once.** A launcher that starts the
+real process with the same command line -- debugpy's launcher, a Windows venv's redirecting
+``python.exe`` -- leaves a parent and a child that both match; only the child, which runs the
+program, is counted.
+
+**A console child gets a console of its own, with no window** (``CREATE_NO_WINDOW``, as
+MAST_common's ``process.py`` starts them). Sharing the supervisor's console would hand it the
+supervisor's Ctrl-C and its window's close, and stopping the supervisor must leave the programs
+running. GUI programs such as PWI4 ignore the flag.
+
 **A spawn gets a startup grace.** Failed probes do not count toward the threshold until the
 program has probed healthy once or :data:`STARTUP_GRACE_SECONDS` has passed, so a slow cold
 start is ``starting``, not a restart loop. An adopted program was already running and gets none.
@@ -25,8 +40,9 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +61,7 @@ STARTUP_GRACE_SECONDS = 120.0
 # A tick follows phase changes it causes (found -> probed, stopped -> scheduled) rather than
 # leaving each for the next tick; the longest chain is absent -> running -> stopping -> absent.
 MAX_STEPS_PER_TICK = 4
+SPAWN_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,14 +69,15 @@ class FoundProcess:
     pid: int
     session: int | None  # None when it cannot be read, typically another user's process
     started: float  # creation time, seconds since the epoch
+    parent: int | None = None  # the parent's pid, when it can be read
 
 
 class ProcessApi(Protocol):
-    def find(self, image: str) -> list[FoundProcess]: ...
+    def find(self, image: str, argument: str | None = None) -> list[FoundProcess]: ...
 
     def current_session(self) -> int: ...
 
-    def spawn(self, argv: list[str], cwd: Path) -> int: ...
+    def spawn(self, argv: list[str], cwd: Path, env: Mapping[str, str] | None = None) -> int: ...  # None: inherit
 
     def is_running(self, pid: int) -> bool: ...
 
@@ -141,12 +159,18 @@ class ManagedProcess:
         api: ProcessApi,
         clock: Clock,
         submit: Submit | None = None,
+        argument: str | None = None,
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         if mode is SupervisionMode.DISABLED:
             raise ValueError(f"{name}: a disabled program is not managed")
         self.name = name
         self._image = Path(argv[0]).name
+        self._argument = argument  # also required on the command line of a match
         self._argv = argv
+        self._cwd = cwd or Path(argv[0]).parent
+        self._env = env
         self._mode = mode
         self._policy = policy
         self._probe = probe
@@ -218,7 +242,9 @@ class ManagedProcess:
 
     def _found(self) -> tuple[list[FoundProcess], list[FoundProcess]]:
         """The copies running in our login session, oldest first, and those running in another."""
-        found = self._api.find(self._image)
+        found = self._api.find(self._image, self._argument)
+        launchers = {p.parent for p in found}
+        found = [p for p in found if p.pid not in launchers]  # a launcher and what it launched: the latter
         session = self._api.current_session()
         mine = sorted((p for p in found if p.session == session), key=lambda p: p.started)
         return mine, [p for p in found if p.session != session]
@@ -254,7 +280,7 @@ class ManagedProcess:
 
     def _spawn(self, now: float) -> None:
         try:
-            pid = self._api.spawn(self._argv, cwd=Path(self._argv[0]).parent)
+            pid = self._api.spawn(self._argv, cwd=self._cwd, env=self._env)
         except OSError as e:
             self._schedule_restart(now, f"spawn failed: {e}")
             return
@@ -391,14 +417,19 @@ class OsProcessApi:
         self._children: dict[int, subprocess.Popen[bytes]] = {}
         self._adopted: dict[int, psutil.Process] = {}
 
-    def find(self, image: str) -> list[FoundProcess]:
-        """By image name, ignoring case as Windows does."""
+    def find(self, image: str, argument: str | None = None) -> list[FoundProcess]:
+        """By image name, and by an argument when given, ignoring case and slash direction as Windows does.
+
+        A process whose command line cannot be read does not match an argument.
+        """
         from common.process import process_session_id
 
         wanted = image.casefold()
         found = []
-        for proc in psutil.process_iter(["name", "create_time"]):
+        for proc in psutil.process_iter(["name", "create_time", "ppid"]):
             if (proc.info["name"] or "").casefold() != wanted:
+                continue
+            if argument is not None and not names_argument(proc, argument):
                 continue
             try:
                 session: int | None = process_session_id(proc.pid)
@@ -406,7 +437,11 @@ class OsProcessApi:
                 session = None
             if proc.pid not in self._children:
                 self._adopted[proc.pid] = proc
-            found.append(FoundProcess(pid=proc.pid, session=session, started=proc.info["create_time"] or 0.0))
+            found.append(
+                FoundProcess(
+                    pid=proc.pid, session=session, started=proc.info["create_time"] or 0.0, parent=proc.info["ppid"]
+                )
+            )
         return found
 
     def current_session(self) -> int:
@@ -414,8 +449,8 @@ class OsProcessApi:
 
         return process_session_id(os.getpid())
 
-    def spawn(self, argv: list[str], cwd: Path) -> int:
-        child = subprocess.Popen(argv, cwd=cwd, shell=False)
+    def spawn(self, argv: list[str], cwd: Path, env: Mapping[str, str] | None = None) -> int:
+        child = subprocess.Popen(argv, cwd=cwd, env=env, shell=False, creationflags=SPAWN_FLAGS)
         self._children[child.pid] = child
         return child.pid
 
@@ -455,3 +490,22 @@ class OsProcessApi:
             return
         except psutil.AccessDenied as e:
             raise PermissionError(f"pid {pid}: access denied") from e
+
+
+def comparable_path(text: str) -> str:
+    """A path or argument as Windows compares it: case-insensitive, either slash."""
+    return text.replace("\\", "/").casefold()
+
+
+class HasCmdline(Protocol):
+    def cmdline(self) -> list[str]: ...
+
+
+def names_argument(proc: HasCmdline, argument: str) -> bool:
+    """True when one of ``proc``'s arguments is ``argument``; false when they cannot be read."""
+    try:
+        cmdline = proc.cmdline()
+    except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+        return False
+    wanted = comparable_path(argument)
+    return any(comparable_path(arg) == wanted for arg in cmdline)

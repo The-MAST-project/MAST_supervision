@@ -82,6 +82,11 @@ def build_launch(role: str, opmode: OpMode, top: Path, conf: LaunchSettings, env
             return _app(role, top, conf, env)
 
 
+def app_entry(role: str, top: Path) -> Path:
+    """The role's ``app.py``. Its folder is the app's import root and working directory."""
+    return top / role / "src" / "app.py"
+
+
 def _vscode(role: str, top: Path, conf: LaunchSettings, env: Mapping[str, str]) -> LaunchSpec:
     if conf.vscode_exe is None:
         raise LaunchError("opmode operated launches VSCode, and VSCode was not found")
@@ -101,12 +106,12 @@ def _app(role: str, top: Path, conf: LaunchSettings, env: Mapping[str, str]) -> 
             f"opmode controlled is refused for {role}: its app does not read opmode yet and would start "
             "its hardware at once. Set opmode operated for this machine."
         )
-    src = top / role / "src"
+    app = app_entry(role, top)
     app_env = {k: v for k, v in env.items() if k.lower() not in PROXY_VARIABLES} | UNBUFFERED
     return LaunchSpec(
         name="app",
-        argv=(str(conf.python), str(src / "app.py")),
-        cwd=src,
+        argv=(str(conf.python), str(app)),
+        cwd=app.parent,
         env=MappingProxyType(app_env),
         supervised=True,
     )
