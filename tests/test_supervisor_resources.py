@@ -3,11 +3,11 @@ import socket
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 import supervision.resources as resources
+from common.filer import Filer, Location
 from supervision.clock import Clock
 from supervision.resources import (
     ProbeResult,
@@ -158,23 +158,27 @@ def test_a_hung_resolver_is_down_within_the_budget(monkeypatch: pytest.MonkeyPat
     assert "no answer within 0.1s" in result.detail
 
 
-def _filer(share_root: str, shared_root: str, usable: bool) -> SimpleNamespace:
-    return SimpleNamespace(
-        share_root=SimpleNamespace(root=share_root),
-        shared=SimpleNamespace(root=shared_root),
-        ensure_shared_root=lambda: usable,
-    )
+class FakeFiler(Filer):
+    """Only what ``probe_share`` reads; the real constructor reaches for the machine's drives."""
+
+    def __init__(self, share_root: str, shared_root: str, usable: bool) -> None:
+        self.share_root = Location(None, share_root)
+        self.shared = Location(None, shared_root)
+        self._usable = usable
+
+    def ensure_shared_root(self) -> bool:
+        return self._usable
 
 
 @pytest.mark.parametrize(("usable", "state"), [(True, ResourceState.OK), (False, ResourceState.DOWN)])
 def test_share_follows_ensure_shared_root(tmp_path: Path, usable: bool, state: ResourceState) -> None:
-    filer = _filer(str(tmp_path), str(tmp_path / "mast07"), usable)
+    filer = FakeFiler(str(tmp_path), str(tmp_path / "mast07"), usable)
     assert probe_share(lambda: filer).state is state
 
 
 def test_an_unmapped_share_is_down_despite_the_local_fallback(tmp_path: Path) -> None:
     # Z: unmapped: Filer's `shared` falls back to C:/MAST/, where ensure_shared_root() is True.
-    filer = _filer(str(tmp_path / "unmapped-Z"), str(tmp_path), usable=True)
+    filer = FakeFiler(str(tmp_path / "unmapped-Z"), str(tmp_path), usable=True)
     result = probe_share(lambda: filer)
     assert result.state is ResourceState.DOWN
     assert "unmapped-Z" in result.detail
@@ -184,9 +188,9 @@ def test_each_probe_builds_a_fresh_filer(tmp_path: Path) -> None:
     # A Filer built before Z: mounted keeps its fallback forever; each probe must look again.
     built = []
 
-    def factory() -> SimpleNamespace:
+    def factory() -> FakeFiler:
         built.append(1)
-        return _filer(str(tmp_path), str(tmp_path / "mast07"), usable=True)
+        return FakeFiler(str(tmp_path), str(tmp_path / "mast07"), usable=True)
 
     probe_share(factory)
     probe_share(factory)

@@ -29,7 +29,12 @@ def test_a_blocked_class_can_still_be_subclassed() -> None:
 @pytest.mark.skipif(sys.platform != "win32", reason="win32process exists only on Windows")
 def test_win32process_cannot_start_a_process() -> None:
     import win32process
+    import win32security
 
-    for create in (win32process.CreateProcess, win32process.CreateProcessAsUser):
-        with pytest.raises(ProcessLaunchError):
-            create(None, "pwi4.exe", None, None, False, 0, None, None, None)
+    # Typed as the stubs want; the guard raises before any argument reaches Windows.
+    startup = win32process.STARTUPINFO()
+    attributes = win32security.SECURITY_ATTRIBUTES()
+    with pytest.raises(ProcessLaunchError):
+        win32process.CreateProcess(None, "pwi4.exe", None, None, False, 0, None, None, startup)
+    with pytest.raises(ProcessLaunchError):
+        win32process.CreateProcessAsUser(0, "pwi4.exe", "pwi4.exe", attributes, attributes, False, 0, None, "C:\\", startup)

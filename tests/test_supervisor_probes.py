@@ -43,7 +43,7 @@ def http_server(status: int, body: bytes, delay: float = 0.0) -> Iterator[int]:
             self.end_headers()
             self.wfile.write(body)
 
-        def log_message(self, *args: object) -> None:
+        def log_message(self, format: str, *args: object) -> None:
             pass
 
     server = ThreadingHTTPServer((HOST, 0), Handler)

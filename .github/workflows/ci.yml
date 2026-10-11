@@ -87,6 +87,13 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: python -m pytest -q -ra
 
+      # On the Linux leg only: pyrightconfig.json's pythonPlatform "All" already covers the
+      # win32 branches, and pyright resolves imports from this joint install.
+      - name: Types
+        if: runner.os == 'Linux'
+        working-directory: supervision
+        run: basedpyright
+
   lint:
     name: lint
     runs-on: ubuntu-latest

@@ -35,6 +35,8 @@ dev = [
     "pytest",
     # The fleet pin: formatter output differs between ruff versions.
     "ruff==0.16.0",
+    # MAST_provisioning's pin: the version decides what counts as a finding (pyrightconfig.json).
+    "basedpyright==1.39.10",
 ]
 
 [tool.uv]
