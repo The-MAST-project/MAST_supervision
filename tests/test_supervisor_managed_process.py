@@ -1,13 +1,27 @@
 import logging
+import subprocess
+import sys
+from collections.abc import Mapping
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import psutil
 import pytest
 
+import supervision.managed as managed_module
 from supervision.clock import Clock
-from supervision.managed import STARTUP_GRACE_SECONDS, Backoff, FoundProcess, ManagedProcess, RestartPolicy
+from supervision.managed import (
+    SPAWN_FLAGS,
+    STARTUP_GRACE_SECONDS,
+    Backoff,
+    FoundProcess,
+    ManagedProcess,
+    OsProcessApi,
+    RestartPolicy,
+    names_argument,
+)
 from supervision.probes import HealthResult
 from supervision.state import ProcessState, Severity, SupervisionMode
 
@@ -49,19 +63,26 @@ class FakeApi:
     spawn_error: OSError | None = None
     signal_error: OSError | None = None
     images: list[str] = field(default_factory=list)
+    arguments: list[str | None] = field(default_factory=list)
+    envs: list[Mapping[str, str] | None] = field(default_factory=list)
+    parents: dict[int, int] = field(default_factory=dict)
     next_pid: int = 100
 
-    def find(self, image: str) -> list[FoundProcess]:
+    def find(self, image: str, argument: str | None = None) -> list[FoundProcess]:
         self.images.append(image)
-        return [FoundProcess(pid, p.session, p.started) for pid, p in self.processes.items() if p.running]
+        self.arguments.append(argument)
+        return [
+            FoundProcess(pid, p.session, p.started, self.parents.get(pid)) for pid, p in self.processes.items() if p.running
+        ]
 
     def current_session(self) -> int:
         return OURS
 
-    def spawn(self, argv: list[str], cwd: Path) -> int:
+    def spawn(self, argv: list[str], cwd: Path, env: Mapping[str, str] | None = None) -> int:
         if self.spawn_error is not None:
             raise self.spawn_error
         self.spawns.append((argv, cwd))
+        self.envs.append(env)
         pid = self.next_pid
         self.next_pid += 1
         self.processes[pid] = FakeProcess(session=OURS)
@@ -389,6 +410,62 @@ def _exits_once(api: FakeApi, fake: FakeClock) -> ManagedProcess:
     return managed
 
 
+def test_without_an_argument_the_image_alone_is_matched() -> None:
+    api = FakeApi()
+    _managed(api, FakeClock(), Probe()).tick()
+
+    assert set(api.arguments) == {None}
+
+
+def test_an_argument_is_required_on_the_command_line_of_a_match() -> None:
+    api = FakeApi()
+    app = "C:/MAST/unit/src/app.py"
+    managed = ManagedProcess(
+        "app",
+        ["python.exe", app],
+        SupervisionMode.SUPERVISED,
+        POLICY,
+        Probe(),
+        api,
+        FakeClock().clock(),
+        submit=run_now,
+        argument=app,
+    )
+
+    managed.tick()
+
+    assert set(api.arguments) == {app}
+
+
+def test_a_spawn_takes_the_given_folder_and_environment() -> None:
+    api = FakeApi()
+    src, env = Path("C:/MAST/unit/src"), {"PYTHONUNBUFFERED": "1"}
+    managed = ManagedProcess(
+        "app",
+        ["python.exe", "app.py"],
+        SupervisionMode.SUPERVISED,
+        POLICY,
+        Probe(),
+        api,
+        FakeClock().clock(),
+        submit=run_now,
+        cwd=src,
+        env=env,
+    )
+
+    managed.tick()
+
+    assert api.spawns == [(["python.exe", "app.py"], src)]
+    assert api.envs == [env]
+
+
+def test_by_default_a_spawn_inherits_the_environment() -> None:
+    api = FakeApi()
+    _managed(api, FakeClock(), Probe()).tick()
+
+    assert api.envs == [None]
+
+
 def test_a_foreign_copy_started_during_the_backoff_blocks_the_respawn() -> None:
     api = FakeApi()
     fake = FakeClock()
@@ -459,3 +536,75 @@ def test_a_copy_reported_beside_the_adopted_one_is_dropped_once_it_exits() -> No
     api.processes[8].running = False
     fake.advance(POLICY.probe_interval_seconds)
     assert "pid 8" not in managed.tick().detail
+
+
+# --- found by the review of stage 3 part 1 ---------------------------------------------------
+
+
+class CmdlineOnly:
+    """Just what ``names_argument`` reads from a ``psutil.Process``."""
+
+    def __init__(self, cmdline: list[str] | Exception) -> None:
+        self._cmdline = cmdline
+
+    def cmdline(self) -> list[str]:
+        if isinstance(self._cmdline, Exception):
+            raise self._cmdline
+        return self._cmdline
+
+
+APP_PY = "C:/MAST/unit/src/app.py"
+
+
+@pytest.mark.parametrize(
+    "cmdline",
+    [
+        ["python.exe", APP_PY],
+        ["python.exe", r"C:\MAST\unit\src\app.py"],
+        ["python.exe", "-m", "debugpy", "c:/mast/UNIT/src/APP.py"],
+    ],
+)
+def test_the_app_is_named_whatever_the_case_or_slash(cmdline: list[str]) -> None:
+    assert names_argument(CmdlineOnly(cmdline), APP_PY)
+
+
+@pytest.mark.parametrize(
+    "cmdline",
+    [["python.exe", "-m", "supervision"], ["python.exe", "C:/MAST/spec/src/app.py"], ["python.exe", APP_PY + ".bak"]],
+)
+def test_another_python_does_not_name_the_app(cmdline: list[str]) -> None:
+    assert not names_argument(CmdlineOnly(cmdline), APP_PY)
+
+
+def test_a_command_line_that_cannot_be_read_does_not_match() -> None:
+    assert not names_argument(CmdlineOnly(psutil.AccessDenied(pid=4)), APP_PY)
+
+
+def test_of_a_launcher_and_the_copy_it_launched_the_launched_one_is_adopted() -> None:
+    api = FakeApi()
+    api.processes[10] = FakeProcess(session=OURS, started=1.0)
+    api.processes[11] = FakeProcess(session=OURS, started=2.0)
+    api.parents = {11: 10}
+
+    status = _managed(api, FakeClock(), Probe()).tick()
+
+    assert status.pid == 11
+    assert "also running" not in status.detail
+
+
+def test_a_console_child_gets_a_console_of_its_own(monkeypatch) -> None:
+    seen = {}
+
+    class Recorder:
+        pid = 42
+
+        def __init__(self, argv, **kwargs) -> None:
+            seen.update(kwargs)
+
+    monkeypatch.setattr(managed_module.subprocess, "Popen", Recorder)
+
+    OsProcessApi().spawn(["ps3cli.exe"], Path("C:/ps3cli"))
+
+    assert seen["creationflags"] == SPAWN_FLAGS
+    if sys.platform == "win32":
+        assert SPAWN_FLAGS & subprocess.CREATE_NO_WINDOW

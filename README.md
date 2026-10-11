@@ -9,7 +9,7 @@ Process supervision for MAST unit and spec machines: two programs, one package.
 
 The supervisor reports through three surfaces built on one snapshot: a small window with a rolling log, a heartbeat block in the log file every five minutes, and `GET /mast/api/v1/supervisor/status` on port 8004.
 
-**Status: stage 2 in progress** — the platform-neutral core, nothing yet runnable. Landed so far:
+**Status: stage 3 in progress.** The loop runs in a console (`python -m supervision --no-gui --no-service`); the status API, the window and the service are still to come. Landed so far:
 
 | module | what |
 |---|---|
@@ -22,7 +22,11 @@ The supervisor reports through three surfaces built on one snapshot: a small win
 | `managed.py` | `ManagedProcess`: adopts a copy in its own login session or spawns one, blocks without killing when a copy runs in another session, probes without overlap, restarts after the threshold with backoff and a startup grace, stops on a crash loop; `OsProcessApi` is the Windows side |
 | `launcher.py` | `build_launch()`, the pure role + `opmode` -> `LaunchSpec` function: VSCode once under `operated`; the app under `controlled`, for unit only (spec's app does not read `opmode` yet), without proxy variables and with `MAST_OPMODE` only as inherited |
 | `locate.py` | where VSCode, PWI4 and ps3cli (and its catalog) are installed, when the configuration names no `exe` |
-| `__main__.py` | `python -m supervision --dry-run`: prints the role, `opmode`, the programs and the launch, and exits; the supervisor loop arrives in stage 3 |
+| `programs.py` | what each configured program name means on a MAST machine (image, location, default arguments, probe), resolved into the rows the loop supervises and the lines `--dry-run` prints |
+| `heartbeat.py` | `render_heartbeat()`: the whole snapshot as one ASCII log record, at its severity |
+| `supervisor.py` | the loop: waits out the resources, loads the configuration on a backoff, supervises the programs, launches VSCode or the app, republishes the snapshot on change and on every heartbeat; stopping leaves the programs running |
+| `wiring.py` | the real configuration, probes and process API the loop is given; the tests give it fakes |
+| `__main__.py` | `--dry-run` prints the role, `opmode`, the programs and the launch; `--no-gui --no-service [--no-app]` runs the loop until Ctrl-C, logging to `mast-<role>-supervisor-log.txt` |
 
 The design is [`plans/supervisor-design.md`](https://github.com/The-MAST-project/mast-claude-config/blob/main/plans/supervisor-design.md) in mast-claude-config.
 

@@ -3,8 +3,7 @@ from types import MappingProxyType
 
 import pytest
 
-from common.config.supervisor import ManagedProcessConfig, SupervisionMode
-from supervision.__main__ import NOT_FOUND, Plan, describe_programs, main, render_plan
+from supervision.__main__ import Plan, main, render_plan
 from supervision.launcher import LaunchError, LaunchSettings, build_launch
 from supervision.state import OpMode
 
@@ -129,38 +128,9 @@ def test_the_plan_marks_a_missing_target() -> None:
     assert f"  MISSING: {TOP / 'mast-unit.code-workspace'}" in text
 
 
-def test_programs_skip_disabled_and_label_observed() -> None:
-    processes = {
-        "pwi4": ManagedProcessConfig(mode=SupervisionMode.DISABLED),
-        "phd2": ManagedProcessConfig(mode=SupervisionMode.OBSERVED),
-    }
-
-    assert describe_programs(processes, {}, None) == {"phd2": "observed, not started"}
-
-
-def test_a_configured_exe_wins_over_the_located_one() -> None:
-    processes = {"pwi4": ManagedProcessConfig(exe="D:/PWI4.exe")}
-
-    assert describe_programs(processes, {"pwi4": Path("/located/PWI4.exe")}, None) == {"pwi4": "D:/PWI4.exe"}
-
-
-def test_a_supervised_program_shows_where_it_was_located_or_that_it_was_not() -> None:
-    processes = {"pwi4": ManagedProcessConfig(), "other": ManagedProcessConfig()}
-
-    programs = describe_programs(processes, {"pwi4": Path("/located/PWI4.exe")}, None)
-
-    assert programs == {"pwi4": str(Path("/located/PWI4.exe")), "other": NOT_FOUND}
-
-
-def test_the_catalog_is_shown_only_with_ps3cli() -> None:
-    catalog = Path("/catalog")
-
-    assert "ps3cli catalog" not in describe_programs({"pwi4": ManagedProcessConfig()}, {}, catalog)
-    assert describe_programs({"ps3cli": ManagedProcessConfig()}, {}, catalog)["ps3cli catalog"] == str(catalog)
-
-
-def test_only_dry_run_is_available() -> None:
+@pytest.mark.parametrize("argv", [[], ["--no-gui"], ["--no-service"], ["--no-app"]])
+def test_without_a_window_or_service_the_console_flags_are_required(argv: list[str]) -> None:
     with pytest.raises(SystemExit) as raised:
-        main([])
+        main(argv)
 
     assert raised.value.code == 2
