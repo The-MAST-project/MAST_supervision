@@ -260,7 +260,7 @@ def test_operated_launches_vscode_exactly_once() -> None:
     world = World()
     ticks(world, world.supervisor(), 50, step=30.0)
 
-    assert world.api.spawned("Code.exe") == [["/vscode/Code.exe", str(TOP / "mast-unit.ws")]]
+    assert world.api.spawned("Code.exe") == [[str(Path("/vscode/Code.exe")), str(TOP / "mast-unit.ws")]]
 
 
 def test_operated_watches_the_app_as_not_supervised_until_it_appears() -> None:

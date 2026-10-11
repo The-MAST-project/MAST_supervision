@@ -55,7 +55,7 @@ def test_an_observed_program_needs_only_its_image(monkeypatch) -> None:
 def test_a_configured_exe_and_args_win_over_the_located_ones() -> None:
     program = resolve(ps3cli=ManagedProcessConfig(exe="D:/ps3cli.exe", args=["--server"]))["ps3cli"]
 
-    assert program.argv == ("D:/ps3cli.exe", "--server")
+    assert program.argv == (str(Path("D:/ps3cli.exe")), "--server")
 
 
 def test_a_program_not_found_is_a_problem_naming_its_image(monkeypatch) -> None:
