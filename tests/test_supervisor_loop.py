@@ -26,6 +26,7 @@ PWI4 = "/vendor/PWI4.exe"
 OURS = 1
 BUDGET = 300.0
 HEARTBEAT = 300.0
+CONFIGURED_HEARTBEAT = 120.0
 OK = ProbeResult(ResourceState.OK, "fine")
 DOWN = ProbeResult(ResourceState.DOWN, "unreachable")
 HEALTHY = HealthResult(True, "ok")
@@ -127,7 +128,7 @@ class World:
             raise ConnectionError("mongo down")
         return LoadedConfig(
             opmode=self.opmode,
-            supervisor=SupervisorConfig(heartbeat_interval_seconds=HEARTBEAT),
+            supervisor=SupervisorConfig(heartbeat_interval_seconds=CONFIGURED_HEARTBEAT),
             app_port=8000,
             status=self.status(),
         )
@@ -364,7 +365,7 @@ def test_a_heartbeat_follows_every_phase_change_and_then_the_interval(caplog) ->
         ticks(world, supervisor, 6)
         assert sum("supervisor heartbeat" in r.message for r in caplog.records) == 5
         caplog.clear()
-        ticks(world, supervisor, int(HEARTBEAT) - 2)
+        ticks(world, supervisor, int(CONFIGURED_HEARTBEAT) - 2)
         assert not any("supervisor heartbeat" in r.message for r in caplog.records)
         ticks(world, supervisor, 3)
         assert sum("supervisor heartbeat" in r.message for r in caplog.records) == 1
@@ -388,7 +389,7 @@ def test_a_quiet_loop_republishes_only_on_the_heartbeat() -> None:
     ticks(world, supervisor, 10)
     assert supervisor.snapshot is published
 
-    ticks(world, supervisor, int(HEARTBEAT))
+    ticks(world, supervisor, int(CONFIGURED_HEARTBEAT))
     assert supervisor.snapshot.taken_at > published.taken_at
 
 
@@ -412,6 +413,40 @@ def test_stopping_leaves_the_programs_running() -> None:
 
     assert world.api.stops == []
     assert all(p.running for p in world.api.procs.values())
+
+
+def test_stopping_publishes_stopping_so_a_new_supervisor_waits() -> None:
+    world = World()
+    supervisor = world.supervisor()
+    stop = threading.Event()
+    stop.set()
+
+    supervisor.run(stop)
+
+    assert supervisor.snapshot.phase is Phase.STOPPING
+
+
+def test_ctrl_c_publishes_stopping_too(monkeypatch) -> None:
+    supervisor = World().supervisor()
+
+    def interrupted() -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(supervisor, "tick", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        supervisor.run(threading.Event())
+
+    assert supervisor.snapshot.phase is Phase.STOPPING
+
+
+def test_the_snapshot_carries_the_heartbeat_interval_in_force() -> None:
+    world = World()
+    supervisor = world.supervisor()
+    assert supervisor.snapshot.heartbeat_seconds == HEARTBEAT
+
+    ticks(world, supervisor, 6)
+
+    assert supervisor.snapshot.heartbeat_seconds == CONFIGURED_HEARTBEAT
 
 
 @pytest.mark.parametrize("opmode", list(OpMode))

@@ -5,6 +5,8 @@
 - ``--no-gui --no-service`` runs the supervisor loop in this console until Ctrl-C, logging to
   ``mast-<role>-supervisor-log.txt``. The window arrives in stage 3 part 3 and the service in
   stage 5; until then both flags are required. ``--no-app`` launches nothing and watches the app.
+  ``GET /status`` is served on ``SUPERVISOR_PORT`` throughout; a supervisor that cannot have the
+  port does not start (see :mod:`supervision.instance`).
 
 A control machine is refused: it is Linux, and runs no unit or spec app.
 
@@ -67,17 +69,31 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def run(role: str, top: Path, no_app: bool) -> int:
-    from common.mast_logging import LogProgram, configure_logging
+    """The port is claimed before the loop starts, so a second supervisor never reaches the programs."""
+    from common.const import Const
+    from common.mast_logging import LogProgram, configure_logging, get_logger
+    from supervision.api import StatusServer, build_app
+    from supervision.instance import ClaimError, PsutilPortOwners, claim_port
     from supervision.supervisor import Supervisor
     from supervision.wiring import hostname, real_wiring
 
     configure_logging(program=LogProgram.SUPERVISOR)
     env = dict(os.environ)
-    supervisor = Supervisor(role, hostname(), top, env, real_wiring(role, env, Path.home()), no_app=no_app)
+    wiring = real_wiring(role, env, Path.home())
+    supervisor = Supervisor(role, hostname(), top, env, wiring, no_app=no_app)
+    try:
+        sock = claim_port(Const.SUPERVISOR_PORT, PsutilPortOwners(), wiring.clock)
+    except ClaimError as e:
+        get_logger(__name__).error(f"mast-supervisor: not starting: {e}")
+        return 1
+    server = StatusServer(build_app(lambda: supervisor.snapshot), sock)
+    server.start()
     try:
         supervisor.run(threading.Event())
     except KeyboardInterrupt:
         print("mast-supervisor: stopped; the programs it owns are left running", file=sys.stderr)
+    finally:
+        server.stop()
     return 0
 
 

@@ -7,6 +7,7 @@ from pydantic import ValidationError
 import common.config.supervisor as common_supervisor
 import common.opmode as common_opmode
 from supervision.state import (
+    STALE_MARGIN_SECONDS,
     OpMode,
     Phase,
     ProcessState,
@@ -27,6 +28,7 @@ def _snapshot(resources=(), processes=()) -> SupervisorSnapshot:
         started_at=T0,
         phase=Phase.RUNNING,
         hostname="mast07",
+        heartbeat_seconds=300.0,
         role="unit",
         resources=resources,
         processes=processes,
@@ -60,7 +62,9 @@ def test_every_process_state_has_a_severity() -> None:
 
 
 def test_starting_snapshot_needs_no_config() -> None:
-    snap = SupervisorSnapshot(taken_at=T0, started_at=T0, phase=Phase.STARTING, hostname="mast07", role="unit")
+    snap = SupervisorSnapshot(
+        taken_at=T0, started_at=T0, phase=Phase.STARTING, hostname="mast07", role="unit", heartbeat_seconds=300.0
+    )
     assert snap.opmode is None
     assert snap.severity is Severity.OK
 
@@ -103,7 +107,12 @@ def test_an_observed_program_cannot_crash_loop() -> None:
 def test_naive_times_are_rejected() -> None:
     with pytest.raises(ValidationError):
         SupervisorSnapshot(
-            taken_at=datetime(2026, 9, 27, 22), started_at=T0, phase=Phase.STARTING, hostname="mast07", role="unit"
+            taken_at=datetime(2026, 9, 27, 22),
+            started_at=T0,
+            phase=Phase.STARTING,
+            hostname="mast07",
+            role="unit",
+            heartbeat_seconds=300.0,
         )
 
 
@@ -146,3 +155,11 @@ def test_a_program_blocked_by_another_session_is_an_error() -> None:
 
 def test_a_starting_program_is_a_warning() -> None:
     assert _snapshot(processes=[_process(ProcessState.STARTING)]).severity is Severity.WARNING
+
+
+def test_a_snapshot_is_stale_only_past_its_heartbeat_and_the_longest_tick() -> None:
+    snap = _snapshot()
+    limit = snap.taken_at + timedelta(seconds=snap.heartbeat_seconds + STALE_MARGIN_SECONDS)
+
+    assert not snap.is_stale(limit)
+    assert snap.is_stale(limit + timedelta(seconds=1))
