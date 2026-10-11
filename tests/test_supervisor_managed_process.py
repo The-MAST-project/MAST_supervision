@@ -278,6 +278,7 @@ def test_more_restarts_than_allowed_in_the_window_stop_supervision() -> None:
     api = FakeApi()
     fake = FakeClock()
     managed = _managed(api, fake, Probe())
+    status = managed.status()
     for _ in range(POLICY.crash_loop_restarts + 1):
         managed.tick()
         pid = max(api.processes)

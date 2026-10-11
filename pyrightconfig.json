@@ -1,0 +1,22 @@
+// Pyright configuration for MAST_supervision, modeled on MAST_provisioning's.
+//
+// The checker is pinned in pyproject.toml's dev group (basedpyright==1.39.10, pyright 1.1.412,
+// MAST_provisioning's pin). The pin fixes WHAT COUNTS as a finding, so CI, every workstation and
+// Pylance in the editor agree. Why pyright rather than mypy: MAST_provisioning#87.
+{
+    "include": ["."],
+    "exclude": ["**/.venv", "**/__pycache__"],
+    // `common` is the sibling clone under <top>, as mast.pth places it on a machine.
+    "extraPaths": [".."],
+    "pythonVersion": "3.12",
+    // The Windows and POSIX branches in one pass, from the Linux CI leg.
+    "pythonPlatform": "All",
+    // Not basedpyright's default `recommended`: on 2026-10-11 it reported 19 errors and 225
+    // warnings here, about 70 of them Unknown types leaking from MAST_common, which this repo
+    // cannot fix. `standard` was clean on the production code. See
+    // docs/decisions/2026-10-11-basedpyright-in-standard-mode-blocks-ci.md.
+    "typeCheckingMode": "standard",
+    // pywin32 is installed only on Windows; elsewhere the bundled stubs type-check the win32
+    // imports and the missing source is expected, not a finding.
+    "reportMissingModuleSource": "none"
+}

@@ -59,13 +59,14 @@ cd supervision
 tools/dev-env.sh             # .venv: MAST_common's CI pins + this manifest, one resolve, as CI installs
 PYTHONPATH=.. .venv/bin/python -m pytest
 .venv/bin/python -m ruff format --check . && .venv/bin/python -m ruff check .
+.venv/bin/basedpyright         # types, per pyrightconfig.json; blocking in CI
 ```
 
 **Do not run `uv sync` here.** It rebuilds `.venv` to match `uv.lock` exactly, which removes MAST_common's dependencies, and the suite then cannot import `common`. Rerun `tools/dev-env.sh` to repair a venv it emptied.
 
 `tests/conftest.py` makes every process launch raise (`subprocess`, `os`, `psutil.Popen`, and `win32process.CreateProcess` / `CreateProcessAsUser`), since the suite runs on machines where these programs drive hardware. It also redirects `common`'s `Filer` to a temp dir, which is what lets the tests import `common.config` on a Mac.
 
-CI (`.github/workflows/ci.yml`) runs the tests on Linux and Windows against the MAST_common branch named like the PR's head branch, else like its base branch, else `master`, and lints on Linux.
+CI (`.github/workflows/ci.yml`) runs the tests on Linux and Windows against the MAST_common branch named like the PR's head branch, else like its base branch, else `master`, type-checks with basedpyright on the Linux leg (`pythonPlatform: All` covers the win32 branches), and lints on Linux.
 
 **Supervisor work lands on `main`.** A change that needs an unmerged MAST_common change goes on a branch named like common's, so CI pairs the two.
 
