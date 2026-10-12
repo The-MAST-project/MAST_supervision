@@ -13,12 +13,12 @@ a row saying so. A supervisor that dies leaves a machine nobody can see.
 
 **The rows** are one per program the configuration names, plus the app:
 
-- ``operated``: VSCode, launched once and never watched (``not_supervised``), and the app,
+- ``development``: VSCode, launched once and never watched (``not_supervised``), and the app,
   watched read-only. The operator starts the app from VSCode, so an app not running is the
   resting state, reported ``not_supervised`` too, until it appears.
-- ``controlled``: the app, supervised like PWI4. It is matched by its ``app.py`` on the command
+- ``production``: the app, supervised like PWI4. It is matched by its ``app.py`` on the command
   line, since its image is ``python.exe`` like the supervisor's own.
-- ``--no-app``: nothing is launched; the app is watched as under ``operated``.
+- ``--no-app``: nothing is launched; the app is watched as under ``development``.
 
 **The snapshot** is rebuilt every tick and published, by whole-reference assignment, when it
 differs from the last one -- and on every heartbeat even when it does not. So a ``taken_at``

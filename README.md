@@ -13,14 +13,14 @@ The supervisor reports through three surfaces built on one snapshot: a small win
 
 | module | what |
 |---|---|
-| `state.py` | `SupervisorSnapshot`, the one model the window, heartbeat and status API render; its `severity` is the worst resource or process state, and `not_supervised` (VSCode under `operated`, reported with no mode) is never a fault. Imports nothing from `common.config` |
+| `state.py` | `SupervisorSnapshot`, the one model the window, heartbeat and status API render; its `severity` is the worst resource or process state, and `not_supervised` (VSCode under `development`, reported with no mode) is never a fault. Imports nothing from `common.config` |
 | `logsink.py` | `DequeHandler`, the bounded cross-thread buffer between the root logger and the window |
 | `gui_model.py` | `drain()`, the window's per-tick log drain, with no tkinter so it is tested on Linux |
 | `resources.py` | the network (config DB reachable), RAM-disk-and-indexes and share probes, and `ResourceTracker`, which waits each out for its budget and then lets the supervisor proceed degraded |
 | `clock.py` | the injected monotonic and wall clocks |
 | `probes.py` | the PWI4, PHD2, ps3cli and app health probes, each one bounded call against a local port with a timeout no stricter than the app's own client, imports no client of the programs it probes |
 | `managed.py` | `ManagedProcess`: adopts a copy in its own login session or spawns one, blocks without killing when a copy runs in another session, probes without overlap, restarts after the threshold with backoff and a startup grace, stops on a crash loop; `OsProcessApi` is the Windows side |
-| `launcher.py` | `build_launch()`, the pure role + `opmode` -> `LaunchSpec` function: VSCode once under `operated`; the app under `controlled`, for unit only (spec's app does not read `opmode` yet), without proxy variables and with `MAST_OPMODE` only as inherited |
+| `launcher.py` | `build_launch()`, the pure role + `opmode` -> `LaunchSpec` function: VSCode once under `development`; the app under `production`, for unit only (spec's app does not read `opmode` yet), without proxy variables and with `MAST_OPMODE` only as inherited |
 | `locate.py` | where VSCode, PWI4 and ps3cli (and its catalog) are installed, when the configuration names no `exe` |
 | `programs.py` | what each configured program name means on a MAST machine (image, location, default arguments, probe), resolved into the rows the loop supervises and the lines `--dry-run` prints |
 | `heartbeat.py` | `render_heartbeat()`: the whole snapshot as one ASCII log record, at its severity |

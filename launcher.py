@@ -5,14 +5,14 @@ here is tested on Linux CI. The caller locates the executables and passes its en
 
 **One field, two readers.** ``opmode`` decides who runs the app:
 
-- ``operated`` -- the supervisor launches VSCode on ``<top>/mast-<role>.code-workspace``
+- ``development`` -- the supervisor launches VSCode on ``<top>/mast-<role>.code-workspace``
   **once**, and never again; the operator presses F5. VSCode gets the environment unchanged.
-- ``controlled`` -- the supervisor launches the app itself, from ``<top>/<role>/src`` (the
+- ``production`` -- the supervisor launches the app itself, from ``<top>/<role>/src`` (the
   import root ``from unit import Unit`` needs), and restarts it when it exits.
 
-**``controlled`` is refused for spec.** MAST_spec does not read ``opmode`` yet, so a spec app
+**``production`` is refused for spec.** MAST_spec does not read ``opmode`` yet, so a spec app
 started by the supervisor would start its hardware at once while the supervisor reported it
-waiting. The unit acts on ``opmode`` since MAST_unit#297: under ``controlled`` it waits for
+waiting. The unit acts on ``opmode`` since MAST_unit#297: under ``production`` it waits for
 ``startup``.
 
 **The app's environment** is the supervisor's, which is the interactive session's, with:
@@ -38,7 +38,7 @@ from types import MappingProxyType
 from supervision.state import OpMode
 
 APP_ROLES = frozenset({"unit", "spec"})
-CONTROLLED_ROLES = frozenset({"unit"})  # the roles whose app waits for `startup` under `controlled`
+PRODUCTION_ROLES = frozenset({"unit"})  # the roles whose app waits for `startup` under `production`
 
 PROXY_VARIABLES = frozenset({"http_proxy", "https_proxy"})
 UNBUFFERED = {"PYTHONUNBUFFERED": "1"}
@@ -76,9 +76,9 @@ def build_launch(role: str, opmode: OpMode, top: Path, conf: LaunchSettings, env
     if role not in APP_ROLES:
         raise LaunchError(f"role {role!r} has no app to launch; expected one of {', '.join(sorted(APP_ROLES))}")
     match opmode:
-        case OpMode.OPERATED:
+        case OpMode.DEVELOPMENT:
             return _vscode(role, top, conf, env)
-        case OpMode.CONTROLLED:
+        case OpMode.PRODUCTION:
             return _app(role, top, conf, env)
 
 
@@ -89,7 +89,7 @@ def app_entry(role: str, top: Path) -> Path:
 
 def _vscode(role: str, top: Path, conf: LaunchSettings, env: Mapping[str, str]) -> LaunchSpec:
     if conf.vscode_exe is None:
-        raise LaunchError("opmode operated launches VSCode, and VSCode was not found")
+        raise LaunchError("opmode development launches VSCode, and VSCode was not found")
     workspace = top / conf.workspace.format(role=role)
     return LaunchSpec(
         name="vscode",
@@ -101,10 +101,10 @@ def _vscode(role: str, top: Path, conf: LaunchSettings, env: Mapping[str, str]) 
 
 
 def _app(role: str, top: Path, conf: LaunchSettings, env: Mapping[str, str]) -> LaunchSpec:
-    if role not in CONTROLLED_ROLES:
+    if role not in PRODUCTION_ROLES:
         raise LaunchError(
-            f"opmode controlled is refused for {role}: its app does not read opmode yet and would start "
-            "its hardware at once. Set opmode operated for this machine."
+            f"opmode production is refused for {role}: its app does not read opmode yet and would start "
+            "its hardware at once. Set opmode development for this machine."
         )
     app = app_entry(role, top)
     app_env = {k: v for k, v in env.items() if k.lower() not in PROXY_VARIABLES} | UNBUFFERED
