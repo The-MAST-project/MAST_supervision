@@ -19,22 +19,24 @@ from datetime import timedelta
 from supervision.state import ProcessState, ResourceState, SupervisorSnapshot
 
 UNKNOWN = "?"
+NOT_YET_PROBED = "not yet probed"
+NO_PROCESSES_YET = "none yet"
 QUIET_PROCESS_STATES = frozenset({ProcessState.HEALTHY, ProcessState.NOT_SUPERVISED})
 
 
 def render_heartbeat(snapshot: SupervisorSnapshot) -> tuple[int, str]:
     """The logging level and the text of the heartbeat for ``snapshot``."""
     lines = [
-        f"supervisor heartbeat  up {_uptime(snapshot.uptime)}  phase={snapshot.phase}",
-        f"  role={snapshot.role}  opmode={_or_unknown(snapshot.opmode)}  "
-        f"maintenance={_or_unknown(snapshot.in_maintenance)}  config gen={_or_unknown(snapshot.config_generation)}",
+        f"supervisor heartbeat  up {format_uptime(snapshot.uptime)}  phase={snapshot.phase}",
+        f"  role={snapshot.role}  opmode={or_unknown(snapshot.opmode)}  "
+        f"maintenance={or_unknown(snapshot.in_maintenance)}  config gen={or_unknown(snapshot.config_generation)}",
     ]
     if snapshot.config_degraded_reason:
         lines.append(f"  config degraded: {snapshot.config_degraded_reason}")
     resources = "  ".join(
         f"{r.name}={r.state}" + ("" if r.state is ResourceState.OK else f" ({r.detail})") for r in snapshot.resources
     )
-    lines.append(f"  resources  {resources or 'not yet probed'}")
+    lines.append(f"  resources  {resources or NOT_YET_PROBED}")
     processes = [
         f"{p.name}={p.state}"
         + (f" pid={p.pid}" if p.pid is not None else "")
@@ -42,16 +44,16 @@ def render_heartbeat(snapshot: SupervisorSnapshot) -> tuple[int, str]:
         + ("" if p.state in QUIET_PROCESS_STATES else f" ({p.detail})")
         for p in snapshot.processes
     ]
-    lines.append(f"  processes  {'  '.join(processes) or 'none yet'}")
+    lines.append(f"  processes  {'  '.join(processes) or NO_PROCESSES_YET}")
     text = "\n".join(lines).encode("ascii", "replace").decode("ascii")
     return snapshot.severity, text
 
 
-def _uptime(uptime: timedelta) -> str:
+def format_uptime(uptime: timedelta) -> str:
     return str(timedelta(seconds=int(uptime.total_seconds())))
 
 
-def _or_unknown(value: object) -> str:
+def or_unknown(value: object) -> str:
     match value:
         case None:
             return UNKNOWN

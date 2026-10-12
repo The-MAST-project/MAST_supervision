@@ -9,13 +9,14 @@ Process supervision for MAST unit and spec machines: two programs, one package.
 
 The supervisor reports through three surfaces built on one snapshot: a small window with a rolling log, a heartbeat block in the log file every five minutes, and `GET /mast/api/v1/supervisor/status` on port 8004.
 
-**Status: stage 3 in progress.** The loop runs in a console (`python -m supervision --no-gui --no-service`) and serves `GET /status`; the window and the service are still to come. Landed so far:
+**Status: stage 3 in progress.** The supervisor runs from a console (`python -m supervision --no-service`) with its read-only window, or headless with `--no-gui`, and serves `GET /status`; the window's Actions menu and the service are still to come. Landed so far:
 
 | module | what |
 |---|---|
 | `state.py` | `SupervisorSnapshot`, the one model the window, heartbeat and status API render; its `severity` is the worst resource or process state, and `not_supervised` (VSCode under `development`, reported with no mode) is never a fault. Imports nothing from `common.config` |
 | `logsink.py` | `DequeHandler`, the bounded cross-thread buffer between the root logger and the window |
-| `gui_model.py` | `drain()`, the window's per-tick log drain, with no tkinter so it is tested on Linux |
+| `gui_model.py` | what the window shows, with no tkinter so it is tested on Linux: `drain()`, the per-tick log drain; `header()`, the table rows and the About text, from a snapshot |
+| `gui.py` | the read-only window (ttkbootstrap's `bootstrap-dark` theme, plain Tk without it): header, resource and process tables, the log pane with a level filter and tail-follow, About and Help. Closing minimizes it; a machine with no window runs headless |
 | `resources.py` | the network (config DB reachable), RAM-disk-and-indexes and share probes, and `ResourceTracker`, which waits each out for its budget and then lets the supervisor proceed degraded |
 | `clock.py` | the injected monotonic and wall clocks |
 | `probes.py` | the PWI4, PHD2, ps3cli and app health probes, each one bounded call against a local port with a timeout no stricter than the app's own client, imports no client of the programs it probes |
@@ -28,7 +29,7 @@ The supervisor reports through three surfaces built on one snapshot: a small win
 | `api.py` | `GET /mast/api/v1/supervisor/status`: the latest snapshot in a `CanonicalResponse`, read-only, on uvicorn in a daemon thread, served from `starting` on |
 | `instance.py` | `claim_port()`: the status port is the one-supervisor-per-machine lock. A live supervisor on it aborts this one; a `stopping` one is waited for; a dead or wedged supervisor is killed and its programs adopted; a holder that is not a supervisor aborts this one |
 | `wiring.py` | the real configuration, probes and process API the loop is given; the tests give it fakes |
-| `__main__.py` | `--dry-run` prints the role, `opmode`, the programs and the launch; `--no-gui --no-service [--no-app]` claims port 8004, serves `/status` and runs the loop until Ctrl-C, logging to `mast-<role>-supervisor-log.txt`; it exits 1 when the port cannot be had |
+| `__main__.py` | `--dry-run` prints the role, `opmode`, the programs and the launch; `--no-service [--no-gui] [--no-app]` claims port 8004, serves `/status`, opens the window with the loop on a worker thread, and runs until Ctrl-C, logging to `mast-<role>-supervisor-log.txt`; it exits 1 when the port cannot be had |
 
 The design is [`plans/supervisor-design.md`](https://github.com/The-MAST-project/mast-claude-config/blob/main/plans/supervisor-design.md) in mast-claude-config.
 
