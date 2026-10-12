@@ -99,9 +99,9 @@ def test_before_the_configuration_loads_the_header_says_unknown() -> None:
 
 
 def test_the_header_names_the_two_an_operator_acts_on() -> None:
-    top = header(_snapshot(opmode=OpMode.CONTROLLED, in_maintenance=True, config_generation=418), T0)
+    top = header(_snapshot(opmode=OpMode.PRODUCTION, in_maintenance=True, config_generation=418), T0)
 
-    assert (top.maintenance, top.opmode) == ("true", "controlled")
+    assert (top.maintenance, top.opmode) == ("true", "production")
     assert top.summary.endswith("config gen 418")
 
 
@@ -137,14 +137,14 @@ def test_rows_carry_their_severity() -> None:
 
 
 def test_about_carries_what_a_bug_report_needs() -> None:
-    text = about_text(_snapshot(opmode=OpMode.OPERATED), "1.2.3", Path("/top"), None)
+    text = about_text(_snapshot(opmode=OpMode.DEVELOPMENT), "1.2.3", Path("/top"), None)
 
     for expected in (
         "mast-supervisor 1.2.3",
         f"top: {Path('/top')}",
         "host: mast07",
         "role: unit",
-        "opmode: operated",
+        "opmode: development",
         "log: no daily log file",
     ):
         assert expected in text
