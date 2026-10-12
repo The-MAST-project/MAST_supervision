@@ -44,7 +44,7 @@ def test_one_record_with_the_whole_state() -> None:
         snapshot(
             [resource(ResourceState.OK)],
             [process(ProcessState.HEALTHY)],
-            opmode=OpMode.OPERATED,
+            opmode=OpMode.DEVELOPMENT,
             in_maintenance=False,
             config_generation=418,
         )
@@ -52,7 +52,7 @@ def test_one_record_with_the_whole_state() -> None:
 
     assert text.splitlines() == [
         "supervisor heartbeat  up 4:12:06  phase=running",
-        "  role=unit  opmode=operated  maintenance=false  config gen=418",
+        "  role=unit  opmode=development  maintenance=false  config gen=418",
         "  resources  ramdisk=ok",
         "  processes  pwi4=healthy pid=5120 r=1",
     ]

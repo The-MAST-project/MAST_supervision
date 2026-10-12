@@ -42,8 +42,8 @@ class SupervisionMode(StrEnum):
 
 
 class OpMode(StrEnum):
-    OPERATED = "operated"
-    CONTROLLED = "controlled"
+    DEVELOPMENT = "development"
+    PRODUCTION = "production"
 
 
 class Severity(IntEnum):
@@ -85,7 +85,7 @@ class ProcessState(StrEnum):
     # A copy runs in another Windows login session: neither adopted nor killed, and no second
     # copy is started beside it. Clears by itself once that copy exits.
     BLOCKED = "blocked"
-    # Launched once and deliberately not watched (VSCode under `operated`). Not running is
+    # Launched once and deliberately not watched (VSCode under `development`). Not running is
     # its normal resting condition, so it is never a fault: a fleet view over /status that
     # reds out every developer machine is one nobody reads.
     NOT_SUPERVISED = "not_supervised"

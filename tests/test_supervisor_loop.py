@@ -109,7 +109,7 @@ def run_now(fn) -> Future:
 
 @dataclass
 class World:
-    opmode: OpMode = OpMode.OPERATED
+    opmode: OpMode = OpMode.DEVELOPMENT
     resource: ProbeResult = OK
     config_failures: int = 0
     problem: str = ""
@@ -257,14 +257,14 @@ def test_a_configuration_that_recovers_from_its_boot_cache_turns_degraded_into_r
 # --- the app -----------------------------------------------------------------------------------
 
 
-def test_operated_launches_vscode_exactly_once() -> None:
+def test_development_launches_vscode_exactly_once() -> None:
     world = World()
     ticks(world, world.supervisor(), 50, step=30.0)
 
     assert world.api.spawned("Code.exe") == [[str(Path("/vscode/Code.exe")), str(TOP / "mast-unit.ws")]]
 
 
-def test_operated_watches_the_app_as_not_supervised_until_it_appears() -> None:
+def test_development_watches_the_app_as_not_supervised_until_it_appears() -> None:
     world = World()
     supervisor = world.supervisor()
     ticks(world, supervisor, 6)
@@ -312,8 +312,8 @@ def test_no_app_launches_neither_vscode_nor_the_app() -> None:
         assert row(supervisor, "app").state is ProcessState.NOT_SUPERVISED
 
 
-def test_controlled_supervises_the_app_from_its_folder_without_the_proxy() -> None:
-    world = World(opmode=OpMode.CONTROLLED)
+def test_production_supervises_the_app_from_its_folder_without_the_proxy() -> None:
+    world = World(opmode=OpMode.PRODUCTION)
     supervisor = world.supervisor()
     ticks(world, supervisor, 6)
 
@@ -325,8 +325,8 @@ def test_controlled_supervises_the_app_from_its_folder_without_the_proxy() -> No
     assert world.api.spawned("Code.exe") == []
 
 
-def test_controlled_adopts_a_running_app_instead_of_starting_a_second() -> None:
-    world = World(opmode=OpMode.CONTROLLED)
+def test_production_adopts_a_running_app_instead_of_starting_a_second() -> None:
+    world = World(opmode=OpMode.PRODUCTION)
     world.api.procs[999] = Proc([str(PYTHON), APP])
     supervisor = world.supervisor()
     ticks(world, supervisor, 6)
@@ -335,8 +335,8 @@ def test_controlled_adopts_a_running_app_instead_of_starting_a_second() -> None:
     assert row(supervisor, "app").pid == 999
 
 
-def test_controlled_does_not_adopt_another_python_as_the_app() -> None:
-    world = World(opmode=OpMode.CONTROLLED)
+def test_production_does_not_adopt_another_python_as_the_app() -> None:
+    world = World(opmode=OpMode.PRODUCTION)
     world.api.procs[555] = Proc([str(PYTHON), "-m", "supervision"])
     supervisor = world.supervisor()
     ticks(world, supervisor, 6)
@@ -346,7 +346,7 @@ def test_controlled_does_not_adopt_another_python_as_the_app() -> None:
 
 
 def test_a_refused_launch_is_a_row_saying_so() -> None:
-    world = World(opmode=OpMode.CONTROLLED, role="spec")
+    world = World(opmode=OpMode.PRODUCTION, role="spec")
     supervisor = world.supervisor()
     ticks(world, supervisor, 6)
 
@@ -399,11 +399,11 @@ def test_the_snapshot_carries_the_configuration() -> None:
     ticks(world, supervisor, 6)
 
     snapshot = supervisor.snapshot
-    assert (snapshot.opmode, snapshot.config_generation, snapshot.in_maintenance) == (OpMode.OPERATED, 418, False)
+    assert (snapshot.opmode, snapshot.config_generation, snapshot.in_maintenance) == (OpMode.DEVELOPMENT, 418, False)
 
 
 def test_stopping_leaves_the_programs_running() -> None:
-    world = World(opmode=OpMode.CONTROLLED)
+    world = World(opmode=OpMode.PRODUCTION)
     supervisor = world.supervisor()
     stop = threading.Event()
     ticks(world, supervisor, 6)
