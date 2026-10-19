@@ -56,6 +56,7 @@ class Plan:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # How-to: https://github.com/The-MAST-project/MAST/wiki/Running-a-unit
     parser = argparse.ArgumentParser(prog="mast-supervisor")
     parser.add_argument("--dry-run", action="store_true", help="print what would be started, and exit")
     parser.add_argument("--no-gui", action="store_true", help="no window: run headless")
