@@ -240,7 +240,9 @@ class RamdiskReviver:
         last = "not yet probed"
         while self._clock.monotonic() < deadline:
             result = self._ready()
-            if result.state is ResourceState.OK:
+            # Back is mounted with its index folder reachable. Missing indexes are the image's
+            # content, which another restart cannot change; the resource check reports them.
+            if result.state is not ResourceState.DOWN:
                 return Answer.RESTORED, result.detail
             last = result.detail
             self._sleep(self._settings.restore_poll_seconds)

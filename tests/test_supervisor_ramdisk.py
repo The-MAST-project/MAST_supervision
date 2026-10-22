@@ -122,6 +122,26 @@ def test_a_gone_disk_is_revived_through_the_restart_task_and_reported() -> None:
     assert status.requested_by == "unit"
 
 
+def test_a_disk_back_with_indexes_missing_is_restored_and_says_so() -> None:
+    fake = FakeClock()
+    disk = Disk(fake)
+    partial = ProbeResult(ResourceState.DEGRADED, "47 of 47 indexes missing or empty")
+    subject = RamdiskReviver(
+        disk.writable,
+        lambda: partial if disk.ready().state is ResourceState.OK else GONE,
+        disk.run,
+        fake.clock(),
+        SETTINGS,
+        sleep=fake.advance,
+        start=inline,
+    )
+    disk.lose()
+
+    assert subject.request("unit") is Answer.RESTORED
+    status = subject.status()
+    assert status is not None and status.detail == partial.detail
+
+
 def test_a_task_that_does_not_run_fails_the_revival() -> None:
     fake = FakeClock()
     disk = Disk(fake, exit_code=1)
