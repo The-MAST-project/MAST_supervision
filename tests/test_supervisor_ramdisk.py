@@ -535,6 +535,17 @@ def test_the_route_answers_503_when_giving_up(serve) -> None:
     assert body["errors"][0].startswith("giving_up")
 
 
+def test_the_route_answers_502_when_one_revival_fails(serve) -> None:
+    fake = FakeClock()
+    disk = Disk(fake, exit_code=1)
+    disk.lose()
+
+    code, body = put(serve(reviver(fake, disk)))
+
+    assert code == 502
+    assert body["errors"][0] == f"failed: {RESTART_TASK} did not run (exit 1)"
+
+
 def non_loopback_address() -> str | None:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         try:
