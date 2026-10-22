@@ -84,11 +84,11 @@ class Window(Protocol):
 
 
 def run(role: str, top: Path, no_app: bool, gui: bool) -> int:
-    """The port is claimed before the loop starts, so a second supervisor never reaches the programs."""
-    from common.const import Const
+    """Both ports are claimed before the loop starts, so a second supervisor never reaches the programs
+    and none runs without its routes."""
     from common.mast_logging import LogProgram, configure_logging, get_logger
-    from supervision.api import StatusServer, build_app
-    from supervision.instance import ClaimError, PsutilPortOwners, claim_port
+    from supervision.api import start_servers
+    from supervision.instance import LISTENERS, ClaimError, PsutilPortOwners, claim_listeners
     from supervision.supervisor import Supervisor
     from supervision.wiring import hostname, real_wiring
 
@@ -97,12 +97,11 @@ def run(role: str, top: Path, no_app: bool, gui: bool) -> int:
     wiring = real_wiring(role, env, Path.home())
     supervisor = Supervisor(role, hostname(), top, env, wiring, no_app=no_app)
     try:
-        sock = claim_port(Const.SUPERVISOR_PORT, PsutilPortOwners(), wiring.clock)
+        status_sock, action_sock = claim_listeners(LISTENERS, PsutilPortOwners(), wiring.clock)
     except ClaimError as e:
         get_logger(__name__).error(f"mast-supervisor: not starting: {e}")
         return 1
-    server = StatusServer(build_app(lambda: supervisor.snapshot), sock)
-    server.start()
+    servers = start_servers(status_sock, action_sock, lambda: supervisor.snapshot, wiring.ramdisk)
     stop = threading.Event()
     try:
         window = open_gui(supervisor, top) if gui else None
@@ -113,7 +112,8 @@ def run(role: str, top: Path, no_app: bool, gui: bool) -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        server.stop()
+        for server in servers:
+            server.stop()
     print("mast-supervisor: stopped; the programs it owns are left running", file=sys.stderr)
     return 0
 

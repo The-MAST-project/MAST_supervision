@@ -56,6 +56,7 @@ from supervision.launcher import LaunchError, LaunchSettings, LaunchSpec, app_en
 from supervision.managed import Backoff, ManagedProcess, ProcessApi, RestartPolicy, Submit
 from supervision.probes import HealthResult
 from supervision.programs import ResolvedProgram
+from supervision.ramdisk import RamdiskReviver
 from supervision.resources import Probe, Resource, ResourceTracker, WaitOutcome
 from supervision.state import (
     OpMode,
@@ -77,6 +78,7 @@ CONFIG_RETRY_FIRST_SECONDS = 5.0
 CONFIG_RETRY_CAP_SECONDS = 60.0
 APP = "app"
 NOT_STARTED_BY_US = "not running (the operator starts it from VSCode)"
+STEADY_PHASES = frozenset({Phase.RUNNING, Phase.DEGRADED})
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +121,7 @@ class Wiring:
     app_probe: Callable[[int], HealthResult]  # the app's port -> its health
     heartbeat_seconds: float  # until the configuration says otherwise
     submit: Submit | None = None  # how probes run; None: each row's own executor
+    ramdisk: RamdiskReviver | None = None  # None: the RAM disk is reported, never revived
 
 
 class Row(Protocol):
@@ -269,8 +272,17 @@ class Supervisor:
         if now >= self._next_resource_poll:
             self._next_resource_poll = now + self._wiring.resources.probe_interval_seconds
             self._tracker.poll()
+            self._revive_lost_ramdisk()
             if self._loaded is not None:
                 self._refresh_config_status(self._wiring.config_status())
+
+    def _revive_lost_ramdisk(self) -> None:
+        """Only once past the resource wait: at boot, D: is missing until the ImDisk task has run."""
+        reviver = self._wiring.ramdisk
+        if reviver is None or self._phase not in STEADY_PHASES:
+            return
+        if any(s.name == Resource.RAMDISK and s.state is ResourceState.DOWN for s in self._tracker.statuses):
+            reviver.nudge()
 
     def _refresh_config_status(self, status: ConfigStatus) -> None:
         previous = self._config_status
@@ -393,6 +405,7 @@ class Supervisor:
             config_degraded_reason=status.degraded_reason if status else None,
             resources=self._tracker.statuses,
             processes=self._statuses,
+            ramdisk_revival=self._wiring.ramdisk.status() if self._wiring.ramdisk else None,
         )
 
     def _publish(self, now: float) -> None:

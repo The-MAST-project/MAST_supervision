@@ -9,6 +9,8 @@ Process supervision for MAST unit and spec machines: two programs, one package.
 
 The supervisor reports through three surfaces built on one snapshot: a small window with a rolling log, a heartbeat block in the log file every five minutes, and `GET /mast/api/v1/supervisor/status` on port 8004.
 
+On a unit, it also revives the RAM disk (`D:`) when it is gone, on its own probe or when asked through `PUT /mast/api/v1/supervisor/ramdisk/restart` on `127.0.0.1:8005` (`Const.SUPERVISOR_ACTIONS_PORT`). That port is not reachable from another machine, since restarting wipes `D:`. The answers: `409` means `D:` is writable and nothing was done, `202` means a revival is running (ask again), `200` means it was restored (also for 5 minutes afterwards, so asking again hears the outcome), and `503` means the revival failed or the supervisor gave up after 3 failed or short-lived revivals within an hour. The revival runs the SYSTEM scheduled task `\mast-ramdisk-restart`, which MAST_provisioning's imdisk provider registers. The supervisor is not elevated, and cannot detach a disk itself.
+
 **Status: stage 3 in progress.** The supervisor runs from a console (`python -m supervision --no-service`) with its read-only window, or headless with `--no-gui`, and serves `GET /status`; the window's Actions menu and the service are still to come. Landed so far:
 
 | module | what |
@@ -26,10 +28,11 @@ The supervisor reports through three surfaces built on one snapshot: a small win
 | `programs.py` | what each configured program name means on a MAST machine (image, location, default arguments, probe), resolved into the rows the loop supervises and the lines `--dry-run` prints |
 | `heartbeat.py` | `render_heartbeat()`: the whole snapshot as one ASCII log record, at its severity |
 | `supervisor.py` | the loop: waits out the resources, loads the configuration on a backoff, supervises the programs, launches VSCode or the app, republishes the snapshot on change and on every heartbeat; stopping publishes `stopping` and leaves the programs running |
-| `api.py` | `GET /mast/api/v1/supervisor/status`: the latest snapshot in a `CanonicalResponse`, read-only, on uvicorn in a daemon thread, served from `starting` on |
-| `instance.py` | `claim_port()`: the status port is the one-supervisor-per-machine lock. A live supervisor on it aborts this one; a `stopping` one is waited for; a dead or wedged supervisor is killed and its programs adopted; a holder that is not a supervisor aborts this one |
+| `ramdisk.py` | `RamdiskReviver`: probes `D:` with a write before acting, runs one revival at a time through the `\mast-ramdisk-restart` task, waits for the RAM-disk probe (indexes included), and gives up after 3 failed or short-lived revivals within an hour. Unit only |
+| `api.py` | `GET /mast/api/v1/supervisor/status`: the latest snapshot in a `CanonicalResponse`, read-only, on uvicorn in a daemon thread, served from `starting` on; and `build_action_app()`, `/status` plus the `PUT /ramdisk/restart` route, served only on the loopback listener; `start_servers()` starts both |
+| `instance.py` | `claim_listeners()`: claims the status listener (`0.0.0.0:8004`) and the action listener (`127.0.0.1:8005`) alike, through `claim_port()`, and the supervisor does not start without both. The status port is the one-supervisor-per-machine lock. A live supervisor on it aborts this one; a `stopping` one is waited for; a dead or wedged supervisor is killed and its programs adopted; a holder that is not a supervisor aborts this one |
 | `wiring.py` | the real configuration, probes and process API the loop is given; the tests give it fakes |
-| `__main__.py` | `--dry-run` prints the role, `opmode`, the programs and the launch; `--no-service [--no-gui] [--no-app]` claims port 8004, serves `/status`, opens the window with the loop on a worker thread, and runs until Ctrl-C, logging to `mast-<role>-supervisor-log.txt`; it exits 1 when the port cannot be had |
+| `__main__.py` | `--dry-run` prints the role, `opmode`, the programs and the launch; `--no-service [--no-gui] [--no-app]` claims ports 8004 and 8005, serves `/status` on both and the action routes on `127.0.0.1:8005` (a unit only), opens the window with the loop on a worker thread, and runs until Ctrl-C, logging to `mast-<role>-supervisor-log.txt`; it exits 1 when either port cannot be had |
 
 The design is [`plans/supervisor-design.md`](https://github.com/The-MAST-project/mast-claude-config/blob/main/plans/supervisor-design.md) in mast-claude-config.
 

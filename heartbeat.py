@@ -14,9 +14,9 @@ Design: mast-claude-config ``plans/supervisor-design.md`` §7.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-from supervision.state import ProcessState, ResourceState, SupervisorSnapshot
+from supervision.state import ProcessState, RamdiskRevival, ResourceState, RevivalState, SupervisorSnapshot
 
 UNKNOWN = "?"
 NOT_YET_PROBED = "not yet probed"
@@ -45,8 +45,27 @@ def render_heartbeat(snapshot: SupervisorSnapshot) -> tuple[int, str]:
         for p in snapshot.processes
     ]
     lines.append(f"  processes  {'  '.join(processes) or NO_PROCESSES_YET}")
+    if snapshot.ramdisk_revival is not None:
+        lines.append(f"  ramdisk    {render_revival(snapshot.ramdisk_revival)}")
     text = "\n".join(lines).encode("ascii", "replace").decode("ascii")
     return snapshot.severity, text
+
+
+def render_revival(revival: RamdiskRevival) -> str:
+    """E.g. ``lost 02:14, restored 02:15 (requested by unit)``, in UTC like the snapshot's timestamps."""
+    text = f"lost {format_clock(revival.lost_at)}"
+    if revival.restored_at is not None:
+        text += f", restored {format_clock(revival.restored_at)}"
+    if revival.requested_by:
+        text += f" (requested by {revival.requested_by})"
+    text += f"  state={revival.state}"
+    if revival.state is not RevivalState.IDLE and revival.detail:
+        text += f" ({revival.detail})"
+    return text
+
+
+def format_clock(moment: datetime | None) -> str:
+    return UNKNOWN if moment is None else moment.strftime("%H:%M")
 
 
 def format_uptime(uptime: timedelta) -> str:

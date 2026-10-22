@@ -6,9 +6,24 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi import FastAPI
 
+from common.const import Const
 from supervision.api import STATUS_PATH, StatusServer, build_app
 from supervision.clock import Clock
-from supervision.instance import ClaimError, Owner, Timings, bind_listening, claim_port, runs_module
+from supervision.instance import (
+    ACTION_LISTENER,
+    ANY_HOST,
+    LISTENERS,
+    LOOPBACK,
+    STATUS_LISTENER,
+    ClaimError,
+    Listener,
+    Owner,
+    Timings,
+    bind_listening,
+    claim_listeners,
+    claim_port,
+    runs_module,
+)
 from supervision.state import Phase, SupervisorSnapshot
 
 T0 = datetime(2026, 10, 11, 18, 0, tzinfo=UTC)
@@ -258,3 +273,50 @@ def test_a_supervisor_still_stopping_after_the_wait_is_killed(holders) -> None:
 )
 def test_a_supervisor_is_recognized_by_its_module(cmdline: list[str], expected: bool) -> None:
     assert runs_module(cmdline, "supervision") is expected
+
+
+# --- both listeners, claimed alike -----------------------------------------------------------------
+
+
+def test_the_status_listener_is_fleet_wide_and_the_action_listener_loopback_only() -> None:
+    assert Listener(Const.SUPERVISOR_PORT, ANY_HOST) == STATUS_LISTENER
+    assert Listener(Const.SUPERVISOR_ACTIONS_PORT, LOOPBACK) == ACTION_LISTENER
+    assert LISTENERS == (STATUS_LISTENER, ACTION_LISTENER)
+
+
+def test_listeners_are_claimed_in_order_each_on_its_host() -> None:
+    socks = claim_listeners((Listener(0, ANY_HOST), Listener(0, LOOPBACK)), FakeOwners(None), Time().clock())
+    try:
+        assert [s.getsockname()[0] for s in socks] == [ANY_HOST, LOOPBACK]
+    finally:
+        for sock in socks:
+            sock.close()
+
+
+def test_a_dead_supervisor_on_the_loopback_listener_is_killed_and_taken_over() -> None:
+    holder = Holder(bind_listening(0, LOOPBACK))
+    owners = FakeOwners(holder)
+    try:
+        socks = claim_listeners((Listener(holder.port, LOOPBACK),), owners, Time().clock(), FAST, Time().sleep)
+        for sock in socks:
+            sock.close()
+        assert owners.killed == [PEER_PID]
+    finally:
+        holder.release()
+
+
+def test_a_listener_that_cannot_be_claimed_aborts_and_releases_the_ones_already_claimed() -> None:
+    first = bind_listening(0)
+    free = first.getsockname()[1]
+    first.close()
+    holder = Holder(bind_listening(0, LOOPBACK))
+    owners = FakeOwners(holder, is_supervisor=False)
+    try:
+        with pytest.raises(ClaimError, match="not a supervisor") as raised:
+            claim_listeners((Listener(free, ANY_HOST), Listener(holder.port, LOOPBACK)), owners, Time().clock(), FAST)
+        # `raised` keeps the claiming frame alive, so garbage collection cannot be what frees the port.
+        bind_listening(free).close()
+        assert raised.value is not None
+        assert owners.killed == []
+    finally:
+        holder.release()

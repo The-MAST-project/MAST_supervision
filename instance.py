@@ -1,5 +1,9 @@
 """One supervisor per machine, and the status port is the lock.
 
+Both listeners are claimed by this one routine, in order: the read-only status listener on every
+interface, then the action listener on loopback only. A supervisor that cannot claim either does
+not start, and releases whatever it had claimed.
+
 The supervisor binds ``SUPERVISOR_PORT`` before it does anything else, so a second one never
 reaches its programs. A supervisor that started without its API, beside an earlier one that
 still answers, is worse than one that failed to start: two loops would adopt and restart the
@@ -38,6 +42,7 @@ import psutil
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from common.canonical import CanonicalResponse
+from common.const import Const
 from common.mast_logging import get_logger
 from supervision.api import SERVER_STOP_SECONDS, STATUS_PATH
 from supervision.clock import Clock
@@ -48,6 +53,18 @@ logger = get_logger(__name__)
 ANY_HOST = "0.0.0.0"  # noqa: S104 -- the read-only status route is meant to be read fleet-wide
 LOOPBACK = "127.0.0.1"
 SUPERVISOR_MODULE = __name__.partition(".")[0]  # run as `python -m supervision`
+
+
+@dataclass(frozen=True, slots=True)
+class Listener:
+    port: int
+    host: str
+
+
+STATUS_LISTENER = Listener(Const.SUPERVISOR_PORT, ANY_HOST)
+ACTION_LISTENER = Listener(Const.SUPERVISOR_ACTIONS_PORT, LOOPBACK)
+# Status first: it is the one-supervisor lock, and a successor waits on it while this one stops.
+LISTENERS = (STATUS_LISTENER, ACTION_LISTENER)
 
 
 class ClaimError(Exception):
@@ -108,14 +125,34 @@ class Liveness(BaseModel):
     phase: str
 
 
+def claim_listeners(
+    listeners: Sequence[Listener],
+    owners: PortOwners,
+    clock: Clock,
+    timings: Timings = DEFAULT_TIMINGS,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[socket.socket]:
+    """Every listener claimed, in order, or :class:`ClaimError` with none of them left bound."""
+    claimed: list[socket.socket] = []
+    try:
+        for listener in listeners:
+            claimed.append(claim_port(listener.port, owners, clock, timings, sleep, host=listener.host))
+    except ClaimError:
+        for sock in claimed:
+            sock.close()
+        raise
+    return claimed
+
+
 def claim_port(
     port: int,
     owners: PortOwners,
     clock: Clock,
     timings: Timings = DEFAULT_TIMINGS,
     sleep: Callable[[float], None] = time.sleep,
+    host: str = ANY_HOST,
 ) -> socket.socket:
-    """A socket bound to ``port`` on every interface and listening, or :class:`ClaimError`.
+    """A socket bound to ``port`` on ``host`` and listening, or :class:`ClaimError`.
 
     The holder is looked up before and after it is probed, and only a holder that stayed the same
     process is killed: one that changed meanwhile, such as another supervisor that has just taken
@@ -124,11 +161,11 @@ def claim_port(
     claim = _Claim(port, owners, clock, timings, sleep)
     while True:
         try:
-            return bind_listening(port)
+            return bind_listening(port, host)
         except OSError as e:
             holder = claim.holder_to_take_over(e)
         if holder is not None:
-            return _take_over(port, holder, owners, clock, timings, sleep)
+            return _take_over(port, host, holder, owners, clock, timings, sleep)
 
 
 @dataclass(slots=True)
@@ -184,7 +221,13 @@ class _Claim:
 
 
 def _take_over(
-    port: int, owner: Owner, owners: PortOwners, clock: Clock, timings: Timings, sleep: Callable[[float], None]
+    port: int,
+    host: str,
+    owner: Owner,
+    owners: PortOwners,
+    clock: Clock,
+    timings: Timings,
+    sleep: Callable[[float], None],
 ) -> socket.socket:
     if not owner.is_supervisor:
         raise ClaimError(f"port {port} is held by {owner.description}, which is not a supervisor")
@@ -193,14 +236,14 @@ def _take_over(
     deadline = clock.monotonic() + timings.rebind_seconds
     while True:
         try:
-            return bind_listening(port)
+            return bind_listening(port, host)
         except OSError as e:
             if clock.monotonic() >= deadline:
                 raise ClaimError(f"killed {owner.description}, but port {port} is still not free: {e}") from e
         sleep(timings.poll_seconds)
 
 
-def bind_listening(port: int) -> socket.socket:
+def bind_listening(port: int, host: str = ANY_HOST) -> socket.socket:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         # On Windows SO_REUSEADDR would let a second socket bind the same port, which is the
@@ -210,7 +253,7 @@ def bind_listening(port: int) -> socket.socket:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         else:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((ANY_HOST, port))
+        sock.bind((host, port))
         sock.listen()
     except OSError:
         sock.close()
