@@ -14,6 +14,7 @@ from supervision.launcher import LaunchSettings
 from supervision.managed import FoundProcess, RestartPolicy, comparable_path
 from supervision.probes import HealthResult
 from supervision.programs import ResolvedProgram
+from supervision.ramdisk import RESTART_TASK, RamdiskReviver
 from supervision.resources import ProbeResult, Resource
 from supervision.state import OpMode, Phase, ProcessState, ResourceState, SupervisionMode
 from supervision.supervisor import ConfigStatus, LoadedConfig, ResourceSettings, Supervisor, Wiring
@@ -121,6 +122,8 @@ class World:
     api: FakeApi = field(default_factory=FakeApi)
     fake: FakeClock = field(default_factory=FakeClock)
     config_attempts: int = 0
+    ramdisk: ProbeResult | None = None  # None: no RAM disk probe
+    ramdisk_runs: list[list[str]] = field(default_factory=list)
 
     def load_config(self) -> LoadedConfig:
         self.config_attempts += 1
@@ -140,11 +143,31 @@ class World:
         policy = RestartPolicy()
         return [ResolvedProgram("pwi4", self.program_mode, (PWI4,), lambda: HEALTHY, policy, self.problem)]
 
+    def ramdisk_probe(self) -> ProbeResult:
+        assert self.ramdisk is not None
+        return self.ramdisk
+
+    def run_restart_task(self, argv) -> int:
+        self.ramdisk_runs.append(list(argv))
+        return 1
+
     def supervisor(self) -> Supervisor:
+        probes = {Resource.NETWORK: lambda: self.resource}
+        reviver = None
+        if self.ramdisk is not None:
+            probes[Resource.RAMDISK] = self.ramdisk_probe
+            reviver = RamdiskReviver(
+                lambda: self.ramdisk is OK,
+                self.ramdisk_probe,
+                self.run_restart_task,
+                self.fake.clock(),
+                sleep=self.fake.advance,
+                start=lambda work: work(),
+            )
         wiring = Wiring(
             clock=self.fake.clock(),
             api=self.api,
-            resource_probes={Resource.NETWORK: lambda: self.resource},
+            resource_probes=probes,
             resources=ResourceSettings(wait_budget_seconds=BUDGET, probe_interval_seconds=5.0),
             load_config=self.load_config,
             config_status=self.status,
@@ -153,6 +176,7 @@ class World:
             app_probe=lambda port: HEALTHY,
             heartbeat_seconds=HEARTBEAT,
             submit=run_now,
+            ramdisk=reviver,
         )
         return Supervisor(self.role, "mast07", TOP, ENV, wiring, no_app=self.no_app)
 
@@ -457,3 +481,29 @@ def test_the_programs_are_supervised_before_the_app_is_launched(opmode: OpMode) 
 
     names = [Path(argv[0]).name for argv, _, _ in world.api.spawns]
     assert names[0] == "PWI4.exe"
+
+
+# --- the RAM disk ------------------------------------------------------------------------------
+
+
+def test_a_ramdisk_lost_while_running_is_revived_without_being_asked() -> None:
+    world = World(ramdisk=OK)
+    supervisor = world.supervisor()
+    ticks(world, supervisor, 6)
+    world.ramdisk = DOWN
+
+    ticks(world, supervisor, 6)
+
+    assert world.ramdisk_runs[:1] == [["schtasks", "/run", "/tn", RESTART_TASK]]
+    assert supervisor.snapshot.ramdisk_revival is not None
+
+
+def test_a_ramdisk_missing_during_the_resource_wait_is_not_revived() -> None:
+    world = World(ramdisk=DOWN)
+    supervisor = world.supervisor()
+
+    phases = ticks(world, supervisor, 3, step=BUDGET / 4)
+
+    assert set(phases) == {Phase.WAITING_FOR_RESOURCES}
+    assert world.ramdisk_runs == []
+    assert supervisor.snapshot.ramdisk_revival is None

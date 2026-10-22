@@ -3,7 +3,8 @@
 ``common`` is a sibling clone (``<top>/common/``), reached through ``PYTHONPATH=<top>``
 here and through ``mast.pth`` on a machine; nothing below places it.
 
-``common.filer.Filer.__init__`` is shimmed to a temp-dir layout on **every** platform,
+``common.filer.Filer`` is pointed at temporary folders on **every** platform, by common's
+``common.testing.filer.isolate_filer``,
 because ``common.utils`` builds a module-level ``Filer`` at import and ``common.config``
 imports ``common.utils``, so the schema this package reads drags one in:
 
@@ -21,7 +22,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import tempfile
 from types import ModuleType
 from typing import Any
 
@@ -126,29 +126,7 @@ def _block_external_processes() -> None:
             setattr(module, name, _deny(f"{module.__name__}.{name}", original))
 
 
-def _shim_filer_for_tests() -> None:
-    import common.filer as filer_module
+from common.testing import filer as _filer_testing  # noqa: E402 -- installed before collection
 
-    tmp_root = tempfile.mkdtemp(prefix="mast-supervision-tests-")
-    location = filer_module.Location(None, tmp_root)
-
-    def _tmp_init(self: Any, logger: Any = None) -> None:
-        self.local = location
-        self.shared = location
-        self.ram = location
-        # `init_log` builds a `Filer()` and asks it for `machine_log_root()`, which reads
-        # both. Every attribute the real `__init__` binds has to be here.
-        self.share_root = location
-        self.machine = location
-        self.tops = {
-            filer_module.FilerTop.Local: self.local,
-            filer_module.FilerTop.Shared: self.shared,
-            filer_module.FilerTop.Ram: self.ram,
-        }
-        self.logger = logger
-
-    filer_module.Filer.__init__ = _tmp_init
-
-
-_shim_filer_for_tests()
+_filer_testing.isolate_filer(prefix="mast-supervision-tests-")
 _block_external_processes()

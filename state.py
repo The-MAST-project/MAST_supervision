@@ -105,6 +105,23 @@ _PROCESS_SEVERITY = {
 }
 
 
+class RevivalState(StrEnum):
+    IDLE = "idle"
+    RESTORING = "restoring"
+    GIVING_UP = "giving_up"  # too many failed revivals lately: none is attempted
+
+    @property
+    def severity(self) -> Severity:
+        return _REVIVAL_SEVERITY[self]
+
+
+_REVIVAL_SEVERITY = {
+    RevivalState.IDLE: Severity.OK,
+    RevivalState.RESTORING: Severity.WARNING,
+    RevivalState.GIVING_UP: Severity.ERROR,
+}
+
+
 class _Frozen(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -139,6 +156,17 @@ class ProcessStatus(_Frozen):
         return self
 
 
+class RamdiskRevival(_Frozen):
+    """The last time the RAM disk was lost and revived, so an operator can explain a gap in products."""
+
+    state: RevivalState
+    lost_at: AwareDatetime | None = None
+    restored_at: AwareDatetime | None = None  # None while restoring, or when the last revival failed
+    requested_by: str | None = None
+    failures_in_window: int = 0
+    detail: str = ""
+
+
 class SupervisorSnapshot(_Frozen):
     """Everything the supervisor reports, at one instant.
 
@@ -161,6 +189,7 @@ class SupervisorSnapshot(_Frozen):
     config_degraded_reason: str | None = None
     resources: tuple[ResourceStatus, ...] = ()
     processes: tuple[ProcessStatus, ...] = ()
+    ramdisk_revival: RamdiskRevival | None = None  # None until the RAM disk is first lost
 
     def is_stale(self, now: datetime) -> bool:
         """True when the loop that published this has stopped publishing."""
@@ -175,4 +204,6 @@ class SupervisorSnapshot(_Frozen):
     def severity(self) -> Severity:
         """The worst state in the snapshot: what the heartbeat logs at and the GUI colors by."""
         states = [r.state.severity for r in self.resources] + [p.state.severity for p in self.processes]
+        if self.ramdisk_revival is not None:
+            states.append(self.ramdisk_revival.state.severity)
         return max(states, default=Severity.OK)

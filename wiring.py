@@ -11,7 +11,7 @@ from __future__ import annotations
 import socket
 import sys
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from supervision.clock import Clock
 from supervision.launcher import LaunchSettings
@@ -19,7 +19,8 @@ from supervision.locate import locate_vscode_exe
 from supervision.managed import OsProcessApi
 from supervision.probes import probe_app
 from supervision.programs import ResolvedProgram, resolve_programs
-from supervision.resources import Resource, probe_network, probe_ramdisk, probe_share
+from supervision.ramdisk import RamdiskReviver, probe_writable, run_command
+from supervision.resources import ProbeResult, Resource, probe_network, probe_ramdisk, probe_share
 from supervision.state import OpMode
 from supervision.supervisor import ConfigStatus, LoadedConfig, ResourceSettings, Wiring
 
@@ -82,17 +83,27 @@ def real_wiring(role: str, env: Mapping[str, str], home: Path) -> Wiring:
         conf = loaded.supervisor
         return resolve_programs(conf.processes, conf.stop_grace_seconds, env, home)
 
+    def ramdisk_ready() -> ProbeResult:
+        return probe_ramdisk(defaults.index_dir, defaults.index_series, defaults.index_count)
+
+    clock = Clock()
+    # Only a unit's D: is the ImDisk RAM disk; mast-ns-spec's D: is a fixed disk.
+    ramdisk_root = PureWindowsPath(defaults.index_dir).anchor
+    reviver = (
+        RamdiskReviver(lambda: probe_writable(ramdisk_root), ramdisk_ready, run_command, clock) if role == "unit" else None
+    )
+
     def launch_settings(loaded: LoadedConfig) -> LaunchSettings:
         vscode = loaded.supervisor.vscode
         exe = Path(vscode.exe) if vscode.exe else locate_vscode_exe(env)
         return LaunchSettings(python=Path(sys.executable), vscode_exe=exe, workspace=vscode.workspace)
 
     return Wiring(
-        clock=Clock(),
+        clock=clock,
         api=OsProcessApi(),
         resource_probes={
             Resource.NETWORK: lambda: probe_network(f"{local.controller_host}.{local.domain}", local.mongo_port),
-            Resource.RAMDISK: lambda: probe_ramdisk(defaults.index_dir, defaults.index_series, defaults.index_count),
+            Resource.RAMDISK: ramdisk_ready,
             Resource.SHARE: probe_share,
         },
         resources=ResourceSettings(defaults.wait_budget_seconds, defaults.probe_interval_seconds),
@@ -102,4 +113,5 @@ def real_wiring(role: str, env: Mapping[str, str], home: Path) -> Wiring:
         launch_settings=launch_settings,
         app_probe=lambda port: probe_app(port, role),
         heartbeat_seconds=SupervisorConfig().heartbeat_interval_seconds,
+        ramdisk=reviver,
     )
