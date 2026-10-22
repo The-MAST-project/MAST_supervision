@@ -28,11 +28,12 @@ from http import HTTPStatus
 
 import uvicorn
 from fastapi import FastAPI, Response
+from pydantic import BaseModel
 
 from common.canonical import CanonicalResponse
 from common.const import Const
 from supervision.ramdisk import Answer, RamdiskReviver
-from supervision.state import SupervisorSnapshot
+from supervision.state import RamdiskRevival, SupervisorSnapshot
 
 STATUS_PATH = f"{Const.BASE_SUPERVISOR_PATH}/status"
 RAMDISK_RESTART_PATH = f"{Const.BASE_SUPERVISOR_PATH}/ramdisk/restart"
@@ -46,6 +47,14 @@ RESTART_STATUS_CODES = {
     Answer.FAILED: HTTPStatus.SERVICE_UNAVAILABLE,
     Answer.GIVING_UP: HTTPStatus.SERVICE_UNAVAILABLE,
 }
+
+
+class RestartReply(BaseModel):
+    """The answer to this request, and the revival state as it stands when the answer is sent."""
+
+    answer: Answer
+    detail: str
+    revival: RamdiskRevival | None
 
 
 def build_app(snapshot: Callable[[], SupervisorSnapshot]) -> FastAPI:
@@ -70,15 +79,13 @@ def build_action_app(snapshot: Callable[[], SupervisorSnapshot], reviver: Ramdis
 
     @app.put(RAMDISK_RESTART_PATH)
     def restart_ramdisk(response: Response, requested_by: str = UNNAMED_CLIENT) -> CanonicalResponse:
-        answer = reviver.request(requested_by)
-        code = RESTART_STATUS_CODES[answer]
+        outcome = reviver.request(requested_by)
+        code = RESTART_STATUS_CODES[outcome.answer]
         response.status_code = code
-        revival = reviver.status()
-        body = {"answer": answer, "revival": revival.model_dump(mode="json") if revival else None}
         if code is HTTPStatus.SERVICE_UNAVAILABLE:
-            detail = revival.detail if revival else answer
-            return CanonicalResponse(errors=[f"{answer}: {detail}"])
-        return CanonicalResponse(value=body)
+            return CanonicalResponse(errors=[f"{outcome.answer}: {outcome.detail}"])
+        reply = RestartReply(answer=outcome.answer, detail=outcome.detail, revival=reviver.status())
+        return CanonicalResponse(value=reply.model_dump(mode="json"))
 
     return app
 

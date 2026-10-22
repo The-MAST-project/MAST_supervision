@@ -29,6 +29,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -109,11 +110,24 @@ def probe_writable(root: str, timeout: float = WRITE_PROBE_SECONDS) -> bool:
     return bool(outcome) and outcome[0]
 
 
+@dataclass(frozen=True, slots=True)
+class Outcome:
+    """A request's answer, with the detail of the revival it is about."""
+
+    answer: Answer
+    detail: str
+
+
+WRITABLE = "D: takes a write"
+RESTORING = "restoring"
+
+
 @dataclass(slots=True)
 class _Revival:
     requested_by: str
     done: threading.Event = field(default_factory=threading.Event)
     answer: Answer = Answer.RESTORING
+    detail: str = RESTORING
 
 
 class RamdiskReviver:
@@ -136,7 +150,7 @@ class RamdiskReviver:
         self._settings = settings
         self._sleep = sleep
         self._start = start or _daemon_thread
-        self._lock = threading.Lock()
+        self._lock: AbstractContextManager[object] = threading.Lock()
         self._current: _Revival | None = None
         self._failures: deque[float] = deque()  # monotonic times of failed or short-lived revivals
         self._restored_monotonic: float | None = None
@@ -147,13 +161,13 @@ class RamdiskReviver:
         self._gave_up_logged = False
         self._generation = 0  # revivals finished
 
-    def request(self, requested_by: str) -> Answer:
+    def request(self, requested_by: str) -> Outcome:
         """Revive ``D:`` if it is gone, and wait a little for the outcome."""
-        revival = self._begin(requested_by)
-        if isinstance(revival, Answer):
-            return revival
-        revival.done.wait(self._settings.request_wait_seconds)
-        return revival.answer
+        begun = self._begin(requested_by)
+        if isinstance(begun, Outcome):
+            return begun
+        begun.done.wait(self._settings.request_wait_seconds)
+        return Outcome(begun.answer, begun.detail)
 
     def nudge(self) -> None:
         """The supervisor's own probe found ``D:`` down: revive it without waiting for the outcome."""
@@ -180,7 +194,7 @@ class RamdiskReviver:
                 detail=self._detail,
             )
 
-    def _begin(self, requested_by: str) -> _Revival | Answer:
+    def _begin(self, requested_by: str) -> _Revival | Outcome:
         while True:
             with self._lock:
                 if self._current is not None:
@@ -190,21 +204,21 @@ class RamdiskReviver:
             with self._lock:
                 if self._current is not None:
                     return self._current
-                if self._generation == generation:
-                    break
-        with self._lock:
-            if writable:
-                return Answer.RESTORED if self._recently_restored() else Answer.HEALTHY
-            self._expire_failures()
-            self._count_short_lived()
-            self._note_loss(requested_by)
-            if self._giving_up():
-                self._log_giving_up()
-                return Answer.GIVING_UP
-            revival = _Revival(requested_by)
-            self._current = revival
-            self._detail = "restoring"
-            self._gave_up_logged = False
+                if self._generation != generation:
+                    continue
+                if writable:
+                    return Outcome(Answer.RESTORED if self._recently_restored() else Answer.HEALTHY, WRITABLE)
+                self._expire_failures()
+                self._count_short_lived()
+                self._note_loss(requested_by)
+                if self._giving_up():
+                    self._log_giving_up()
+                    return Outcome(Answer.GIVING_UP, self._detail)
+                revival = _Revival(requested_by)
+                self._current = revival
+                self._detail = RESTORING
+                self._gave_up_logged = False
+                break
         logger.warning(f"RAM disk lost; reviving it (requested by {requested_by})")
         self._start(lambda: self._revive(revival))
         return revival
@@ -226,6 +240,7 @@ class RamdiskReviver:
             self._current = None
             self._generation += 1
             revival.answer = answer
+            revival.detail = detail
             revival.done.set()
         if answer is Answer.RESTORED:
             logger.info(f"RAM disk restored: {detail}")

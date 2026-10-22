@@ -20,7 +20,7 @@ areas:
 - After 3 failed or short-lived revivals within an hour, the reviver gives up until the oldest failure leaves the window. A revival counts as short-lived when the disk is lost again within 5 minutes.
 - `Supervisor._revive_lost_ramdisk` revives without being asked, but only in `running` or `degraded`. During the resource wait, `D:` is missing at boot until the ImDisk task has run.
 - `SupervisorSnapshot.ramdisk_revival` reports the last loss, the restoration and who asked. The heartbeat prints it, and `giving_up` is an ERROR.
-- The route is served by `build_action_app` on its own listener, bound to `127.0.0.1:Const.SUPERVISOR_ACTION_PORT` (8005, in MAST_common). That listener also serves `GET /status`.
+- The route is served by `build_action_app` on its own listener, bound to `127.0.0.1:Const.SUPERVISOR_ACTIONS_PORT` (8005, in MAST_common). That listener also serves `GET /status`.
 - **Both listeners are claimed alike, and both are required.** `instance.claim_listeners` claims `LISTENERS` in order, the status listener on `0.0.0.0:8004` and then the action listener on `127.0.0.1:8005`, each through the same `claim_port`: a live supervisor aborts this one, a stopping one is waited for, a dead one is killed and taken over, anything else aborts. If either cannot be had, the supervisor does not start, and closes what it had claimed. On shutdown the action server stops first, so a successor that finds 8004 free finds 8005 free too. Team decision, 2026-10-22.
 - The reviver is wired for the `unit` role only. A spec supervisor still claims the action listener, which then serves `/status` alone.
 
@@ -43,3 +43,6 @@ areas:
 
 - No revival has been run on hardware. The manual test is in the issue: on mast00 with the operator present, remove `D:`, ask, confirm it comes back with its indexes, then confirm a healthy disk answers `409`. mast00's boot task still runs as `mast`, not SYSTEM, because mast00 is not production-provisioned, so its restart task must be registered by hand.
 - `restore_budget_seconds` (300 s) is a guess for loading the 15 GB image, and is not measured.
+- MAST_common's `SupervisorApi` decodes every `503` as `GIVING_UP`, so a single failed revival is logged by `Filer` as "the supervisor has given up". What `Filer` does is the same either way (it stops asking, and the loop keeps reviving), and the logged detail says `failed: …`; a distinct status for `failed` needs a paired MAST_common change.
+- The client sends no `requested_by`, so its requests are recorded as `client`.
+- `ResourcesConfig`'s index set (5206 × 47) matches no unit: `D:` holds 5202 and 5203, 96 files, on mast01 and mast03 (2026-10-22). The revival does not depend on it, but the RAM-disk resource reads `degraded` fleet-wide.

@@ -1,6 +1,7 @@
 import json
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator, Sequence
@@ -99,7 +100,7 @@ def test_a_writable_disk_is_healthy_and_nothing_is_run() -> None:
     disk = Disk(fake)
     subject = reviver(fake, disk)
 
-    assert subject.request("unit") is Answer.HEALTHY
+    assert subject.request("unit").answer is Answer.HEALTHY
     assert disk.runs == []
     assert subject.status() is None
 
@@ -110,7 +111,7 @@ def test_a_gone_disk_is_revived_through_the_restart_task_and_reported() -> None:
     subject = reviver(fake, disk)
     disk.lose()
 
-    assert subject.request("unit") is Answer.RESTORED
+    assert subject.request("unit").answer is Answer.RESTORED
 
     assert disk.runs == [["schtasks", "/run", "/tn", RESTART_TASK]]
     status = subject.status()
@@ -137,7 +138,7 @@ def test_a_disk_back_with_indexes_missing_is_restored_and_says_so() -> None:
     )
     disk.lose()
 
-    assert subject.request("unit") is Answer.RESTORED
+    assert subject.request("unit").answer is Answer.RESTORED
     status = subject.status()
     assert status is not None and status.detail == partial.detail
 
@@ -154,7 +155,7 @@ def test_a_disk_still_unwritable_is_not_restored_until_the_task_has_remounted_it
 
     subject = RamdiskReviver(remounted, lambda: READY, disk.run, fake.clock(), SETTINGS, sleep=fake.advance, start=inline)
 
-    assert subject.request("unit") is Answer.RESTORED
+    assert subject.request("unit").answer is Answer.RESTORED
     status = subject.status()
     assert status is not None and status.restored_at is not None
     assert status.restored_at - T0 >= timedelta(seconds=disk.mount_seconds)
@@ -166,7 +167,10 @@ def test_a_task_that_does_not_run_fails_the_revival() -> None:
     subject = reviver(fake, disk)
     disk.lose()
 
-    assert subject.request("unit") is Answer.FAILED
+    outcome = subject.request("unit")
+
+    assert outcome.answer is Answer.FAILED
+    assert outcome.detail == f"{RESTART_TASK} did not run (exit 1)"
     status = subject.status()
     assert status is not None and status.failures_in_window == 1 and status.restored_at is None
 
@@ -177,7 +181,7 @@ def test_a_disk_not_back_within_the_budget_fails_the_revival() -> None:
     subject = reviver(fake, disk)
     disk.lose()
 
-    assert subject.request("unit") is Answer.FAILED
+    assert subject.request("unit").answer is Answer.FAILED
 
 
 def test_a_slow_revival_answers_restoring_and_the_next_request_joins_it() -> None:
@@ -187,15 +191,15 @@ def test_a_slow_revival_answers_restoring_and_the_next_request_joins_it() -> Non
     subject = reviver(fake, disk, start=started.append)
     disk.lose()
 
-    assert subject.request("unit") is Answer.RESTORING
-    assert subject.request("spec") is Answer.RESTORING
+    assert subject.request("unit").answer is Answer.RESTORING
+    assert subject.request("spec").answer is Answer.RESTORING
     status = subject.status()
     assert status is not None and status.state is RevivalState.RESTORING and status.requested_by == "unit"
 
     started[0]()
     assert len(started) == 1
     assert len(disk.runs) == 1
-    assert subject.request("unit") is Answer.RESTORED
+    assert subject.request("unit").answer is Answer.RESTORED
 
 
 def test_concurrent_requests_trigger_one_revival() -> None:
@@ -212,7 +216,7 @@ def test_concurrent_requests_trigger_one_revival() -> None:
     subject = RamdiskReviver(disk.writable, disk.ready, slow_run, fake.clock(), settings, sleep=fake.advance)
     disk.lose()
     answers: list[Answer] = []
-    threads = [threading.Thread(target=lambda: answers.append(subject.request("unit"))) for _ in range(5)]
+    threads = [threading.Thread(target=lambda: answers.append(subject.request("unit").answer)) for _ in range(5)]
     for thread in threads:
         thread.start()
     release.set()
@@ -231,7 +235,7 @@ def test_three_failed_revivals_within_the_window_give_up_until_the_window_passes
 
     answers = []
     for _ in range(4):
-        answers.append(subject.request("unit"))
+        answers.append(subject.request("unit").answer)
         fake.advance(60.0)
 
     assert answers == [Answer.FAILED, Answer.FAILED, Answer.FAILED, Answer.GIVING_UP]
@@ -240,7 +244,7 @@ def test_three_failed_revivals_within_the_window_give_up_until_the_window_passes
     assert status is not None and status.state is RevivalState.GIVING_UP
 
     fake.advance(SETTINGS.give_up_window_seconds)
-    assert subject.request("unit") is Answer.FAILED
+    assert subject.request("unit").answer is Answer.FAILED
     assert len(disk.runs) == 4
 
 
@@ -251,11 +255,11 @@ def test_a_disk_lost_again_soon_after_its_revival_counts_that_revival_as_failed(
 
     for _ in range(3):
         disk.lose()
-        assert subject.request("unit") is Answer.RESTORED
+        assert subject.request("unit").answer is Answer.RESTORED
         fake.advance(SETTINGS.short_lived_seconds / 2)
     disk.lose()
 
-    assert subject.request("unit") is Answer.GIVING_UP
+    assert subject.request("unit").answer is Answer.GIVING_UP
 
 
 def test_a_disk_lost_long_after_its_revival_is_revived_again() -> None:
@@ -265,7 +269,7 @@ def test_a_disk_lost_long_after_its_revival_is_revived_again() -> None:
 
     for _ in range(4):
         disk.lose()
-        assert subject.request("unit") is Answer.RESTORED
+        assert subject.request("unit").answer is Answer.RESTORED
         fake.advance(SETTINGS.short_lived_seconds * 2)
 
 
@@ -275,13 +279,13 @@ def test_a_request_soon_after_a_revival_hears_restored_and_later_healthy() -> No
     started: list[Callable[[], None]] = []
     subject = reviver(fake, disk, start=started.append)
     disk.lose()
-    assert subject.request("unit") is Answer.RESTORING
+    assert subject.request("unit").answer is Answer.RESTORING
     started[0]()
 
     fake.advance(SETTINGS.recent_restore_seconds / 2)
-    assert subject.request("unit") is Answer.RESTORED
+    assert subject.request("unit").answer is Answer.RESTORED
     fake.advance(SETTINGS.recent_restore_seconds)
-    assert subject.request("unit") is Answer.HEALTHY
+    assert subject.request("unit").answer is Answer.HEALTHY
     assert len(disk.runs) == 1
 
 
@@ -298,13 +302,13 @@ def test_a_revival_that_raises_fails_and_the_next_loss_is_revived(broken: str) -
     subject = RamdiskReviver(disk.writable, ready, runner, fake.clock(), SETTINGS, sleep=fake.advance, start=inline)
     disk.lose()
 
-    assert subject.request("unit") is Answer.FAILED
+    assert subject.request("unit").answer is Answer.FAILED
     status = subject.status()
     assert status is not None
     assert status.state is RevivalState.IDLE
     assert status.failures_in_window == 1
     assert "RuntimeError" in status.detail
-    assert subject.request("unit") is Answer.FAILED
+    assert subject.request("unit").answer is Answer.FAILED
 
 
 def test_giving_up_on_a_short_lived_revival_reports_the_new_loss() -> None:
@@ -313,12 +317,12 @@ def test_giving_up_on_a_short_lived_revival_reports_the_new_loss() -> None:
     subject = reviver(fake, disk)
     for _ in range(3):
         disk.lose()
-        assert subject.request("unit") is Answer.RESTORED
+        assert subject.request("unit").answer is Answer.RESTORED
         fake.advance(SETTINGS.short_lived_seconds / 2)
     disk.lose()
     lost = T0 + timedelta(seconds=fake.seconds)
 
-    assert subject.request("spec") is Answer.GIVING_UP
+    assert subject.request("spec").answer is Answer.GIVING_UP
 
     status = subject.status()
     assert status is not None
@@ -343,10 +347,47 @@ def test_a_probe_that_a_revival_finished_during_is_repeated_not_acted_on() -> No
     subject = RamdiskReviver(probe, disk.ready, disk.run, fake.clock(), SETTINGS, sleep=fake.advance, start=inline)
     disk.lose()
 
-    assert subject.request("unit") is Answer.RESTORED
+    assert subject.request("unit").answer is Answer.RESTORED
     assert len(disk.runs) == 1
     status = subject.status()
     assert status is not None and status.failures_in_window == 0
+
+
+class YieldingLock:
+    """A lock that hands the processor over on release, so a gap between two critical sections
+    is always taken by the other thread."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self._lock.release()
+        time.sleep(0.01)
+
+
+def test_two_callers_whose_probes_both_fail_start_one_revival() -> None:
+    fake = FakeClock()
+    disk = Disk(fake)
+    disk.lose()
+    both_probed = threading.Barrier(2, timeout=TIMEOUT)
+
+    def probe() -> bool:
+        both_probed.wait()
+        return False
+
+    started: list[Callable[[], None]] = []
+    subject = RamdiskReviver(probe, disk.ready, disk.run, fake.clock(), SETTINGS, sleep=fake.advance, start=started.append)
+    subject._lock = YieldingLock()
+    callers = [threading.Thread(target=subject.request, args=(who,)) for who in ("unit", "loop")]
+    for caller in callers:
+        caller.start()
+    for caller in callers:
+        caller.join(TIMEOUT)
+
+    assert len(started) == 1
 
 
 def test_status_does_not_wait_for_a_write_probe_in_flight() -> None:
@@ -587,4 +628,4 @@ def test_a_disk_back_by_itself_while_giving_up_is_healthy() -> None:
         subject.request("unit")
     disk.up = True
 
-    assert subject.request("unit") is Answer.HEALTHY
+    assert subject.request("unit").answer is Answer.HEALTHY
