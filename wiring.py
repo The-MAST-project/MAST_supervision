@@ -84,10 +84,11 @@ def real_wiring(role: str, env: Mapping[str, str], home: Path) -> Wiring:
         return resolve_programs(conf.processes, conf.stop_grace_seconds, env, home)
 
     def ramdisk_ready() -> ProbeResult:
-        return probe_ramdisk(defaults.index_dir, defaults.index_series, defaults.index_count)
+        return probe_ramdisk(defaults.index_dir)
 
     clock = Clock()
-    # Only a unit's D: is the ImDisk RAM disk; mast-ns-spec's D: is a fixed disk.
+    # Only a unit's D: is the ImDisk RAM disk. mast-ns-spec's D: is a fixed disk with no ImDisk task,
+    # so it is neither probed as the RAM disk nor revived.
     ramdisk_root = PureWindowsPath(defaults.index_dir).anchor
     reviver = (
         RamdiskReviver(lambda: probe_writable(ramdisk_root), ramdisk_ready, run_command, clock) if role == "unit" else None
@@ -98,14 +99,18 @@ def real_wiring(role: str, env: Mapping[str, str], home: Path) -> Wiring:
         exe = Path(vscode.exe) if vscode.exe else locate_vscode_exe(env)
         return LaunchSettings(python=Path(sys.executable), vscode_exe=exe, workspace=vscode.workspace)
 
+    resource_probes = {
+        Resource.NETWORK: lambda: probe_network(f"{local.controller_host}.{local.domain}", local.mongo_port),
+        Resource.RAMDISK: ramdisk_ready,
+        Resource.SHARE: probe_share,
+    }
+    if role != "unit":
+        del resource_probes[Resource.RAMDISK]
+
     return Wiring(
         clock=clock,
         api=OsProcessApi(),
-        resource_probes={
-            Resource.NETWORK: lambda: probe_network(f"{local.controller_host}.{local.domain}", local.mongo_port),
-            Resource.RAMDISK: ramdisk_ready,
-            Resource.SHARE: probe_share,
-        },
+        resource_probes=resource_probes,
         resources=ResourceSettings(defaults.wait_budget_seconds, defaults.probe_interval_seconds),
         load_config=lambda: load_config(role, watch=True),
         config_status=lambda: config_status(role),
