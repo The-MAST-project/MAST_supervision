@@ -240,9 +240,11 @@ class RamdiskReviver:
         last = "not yet probed"
         while self._clock.monotonic() < deadline:
             result = self._ready()
-            # Back is mounted with its index folder reachable. Missing indexes are the image's
-            # content, which another restart cannot change; the resource check reports them.
-            if result.state is not ResourceState.DOWN:
+            # Back is writable with its index folder reachable. The write tells the remounted disk
+            # from the one that triggered the revival: schtasks returns before the task has
+            # detached it, and a read-only D: passes the readiness probe. Missing indexes are the
+            # image's content, which another restart cannot change; the resource check reports them.
+            if result.state is not ResourceState.DOWN and self._writable():
                 return Answer.RESTORED, result.detail
             last = result.detail
             self._sleep(self._settings.restore_poll_seconds)

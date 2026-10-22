@@ -142,6 +142,24 @@ def test_a_disk_back_with_indexes_missing_is_restored_and_says_so() -> None:
     assert status is not None and status.detail == partial.detail
 
 
+def test_a_disk_still_unwritable_is_not_restored_until_the_task_has_remounted_it() -> None:
+    # A read-only D: is present, so the readiness probe passes at once; schtasks /run returns
+    # before the task has detached it. Only a write tells the old disk from the remounted one.
+    fake = FakeClock()
+    disk = Disk(fake)
+    disk.lose()
+
+    def remounted() -> bool:
+        return disk.mounted_at is not None and fake.seconds >= disk.mounted_at
+
+    subject = RamdiskReviver(remounted, lambda: READY, disk.run, fake.clock(), SETTINGS, sleep=fake.advance, start=inline)
+
+    assert subject.request("unit") is Answer.RESTORED
+    status = subject.status()
+    assert status is not None and status.restored_at is not None
+    assert status.restored_at - T0 >= timedelta(seconds=disk.mount_seconds)
+
+
 def test_a_task_that_does_not_run_fails_the_revival() -> None:
     fake = FakeClock()
     disk = Disk(fake, exit_code=1)
