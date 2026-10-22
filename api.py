@@ -44,9 +44,10 @@ RESTART_STATUS_CODES = {
     Answer.RESTORED: HTTPStatus.OK,
     Answer.RESTORING: HTTPStatus.ACCEPTED,
     Answer.HEALTHY: HTTPStatus.CONFLICT,
-    Answer.FAILED: HTTPStatus.SERVICE_UNAVAILABLE,
+    Answer.FAILED: HTTPStatus.BAD_GATEWAY,  # the restart task, upstream of this route, did not bring D: back
     Answer.GIVING_UP: HTTPStatus.SERVICE_UNAVAILABLE,
 }
+NOT_REVIVED = frozenset({Answer.FAILED, Answer.GIVING_UP})
 
 
 class RestartReply(BaseModel):
@@ -82,7 +83,7 @@ def build_action_app(snapshot: Callable[[], SupervisorSnapshot], reviver: Ramdis
         outcome = reviver.request(requested_by)
         code = RESTART_STATUS_CODES[outcome.answer]
         response.status_code = code
-        if code is HTTPStatus.SERVICE_UNAVAILABLE:
+        if outcome.answer in NOT_REVIVED:
             return CanonicalResponse(errors=[f"{outcome.answer}: {outcome.detail}"])
         reply = RestartReply(answer=outcome.answer, detail=outcome.detail, revival=reviver.status())
         return CanonicalResponse(value=reply.model_dump(mode="json"))
