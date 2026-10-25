@@ -17,7 +17,9 @@ blocks for many seconds when DNS is down. A probe abandoned at its budget finish
 daemon thread when the resolver gives up.
 
 This module reads no configuration: the caller passes the controller's name and the index
-set, so nothing here imports ``common.config``.
+folder, so nothing here imports ``common.config``. The index set is provisioning's, read from
+the manifest the imdisk provider installs (``INDEX_MANIFEST_PATH``); where there is none, as on
+mast00 and mastw, the set is not checked.
 
 Design: mast-claude-config ``plans/supervisor-design.md`` §5.
 """
@@ -31,6 +33,8 @@ from enum import StrEnum
 from pathlib import Path, PureWindowsPath
 from threading import Thread
 
+from pydantic import BaseModel, ConfigDict, ValidationError
+
 from common.filer import Filer, is_accessible, is_windows_drive_mapped
 from common.mast_logging import get_logger
 from supervision.clock import Clock
@@ -41,6 +45,11 @@ logger = get_logger(__name__)
 CONNECT_TIMEOUT_SECONDS = 2.0
 NETWORK_ANSWER_WITHIN_SECONDS = 5.0  # resolution plus connection
 ACCESS_TIMEOUT_SECONDS = 2.0
+# The index set provisioning declares, installed on each provisioned unit by MAST_provisioning's
+# imdisk provider (MAST_provisioning#254). A copy of that path: MAST_supervision#2, item 6.
+INDEX_MANIFEST_PATH = Path("C:/MAST/state/mast-indexes.json")
+NOT_PROVISIONED = "index set not checked (not provisioned)"
+MISMATCHES_SHOWN = 3
 
 
 class Resource(StrEnum):
@@ -89,22 +98,49 @@ def probe_network(
     return outcome[0]
 
 
-def index_file_names(series: int, count: int) -> list[str]:
-    return [f"index-{series}-{i:02d}.fits" for i in range(count)]
+class IndexFile(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    size: int
 
 
-def missing_indexes(index_dir: Path, series: int, count: int) -> list[str]:
-    """The index files absent from ``index_dir`` or empty -- what a half-finished copy leaves."""
-    missing = []
-    for name in index_file_names(series, count):
-        path = index_dir / name
-        if not path.is_file() or path.stat().st_size == 0:
-            missing.append(name)
-    return missing
+class IndexManifest(BaseModel):
+    files: list[IndexFile]
 
 
-def probe_ramdisk(index_dir: str, series: int, count: int) -> ProbeResult:
-    """Down without the drive or the index folder; degraded, not down, with indexes missing.
+def load_index_manifest(path: Path) -> list[IndexFile] | None:
+    """The declared index set, or None where provisioning installed none (mast00, mastw).
+
+    Raises ``OSError`` or ``ValidationError`` for a file that is there but cannot be read.
+    ``utf-8-sig``: PowerShell may write it with a byte-order mark.
+    """
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return None
+    return IndexManifest.model_validate_json(text).files
+
+
+def index_set_mismatches(declared: list[IndexFile], index_dir: Path) -> list[str]:
+    """How ``index_dir`` differs from ``declared``: a missing, wrong-sized or extra file each give
+    one line. Names compare case-insensitively, as Windows does."""
+    want = {f.name.lower(): f for f in declared}
+    have = {p.name.lower(): p for p in index_dir.iterdir() if p.is_file()}
+    out = []
+    for key, f in sorted(want.items()):
+        if key not in have:
+            out.append(f"missing {f.name}")
+        elif (size := have[key].stat().st_size) != f.size:
+            out.append(f"wrong size {f.name}: {size} bytes, expected {f.size}")
+    out.extend(f"extra {have[key].name}" for key in sorted(have.keys() - want.keys()))
+    return out
+
+
+def probe_ramdisk(index_dir: str, manifest: Path = INDEX_MANIFEST_PATH) -> ProbeResult:
+    """Down without the drive or the index folder, with or without a manifest: the revival acts
+    on down. Then the folder against the declared set, by name and size: degraded when it
+    differs, and not checked where provisioning installed no manifest.
 
     The drive is the one ``index_dir`` names. Windows only, as the RAM disk is.
     """
@@ -113,10 +149,17 @@ def probe_ramdisk(index_dir: str, series: int, count: int) -> ProbeResult:
         return ProbeResult(ResourceState.DOWN, f"{drive} is not mapped")
     if not is_accessible(index_dir, ACCESS_TIMEOUT_SECONDS):
         return ProbeResult(ResourceState.DOWN, f"{index_dir} is not reachable")
-    missing = missing_indexes(Path(index_dir), series, count)
-    if missing:
-        return ProbeResult(ResourceState.DEGRADED, f"{len(missing)} of {count} indexes missing or empty")
-    return ProbeResult(ResourceState.OK, f"{count} indexes")
+    try:
+        declared = load_index_manifest(manifest)
+    except (OSError, ValidationError) as e:
+        return ProbeResult(ResourceState.DEGRADED, f"index manifest {manifest} unreadable: {e}")
+    if declared is None:
+        return ProbeResult(ResourceState.OK, NOT_PROVISIONED)
+    differ = index_set_mismatches(declared, Path(index_dir))
+    if differ:
+        shown = "; ".join(differ[:MISMATCHES_SHOWN])
+        return ProbeResult(ResourceState.DEGRADED, f"{len(differ)} of {len(declared)} index files differ: {shown}")
+    return ProbeResult(ResourceState.OK, f"{len(declared)} indexes")
 
 
 def probe_share(filer_factory: Callable[[], Filer] = Filer) -> ProbeResult:
