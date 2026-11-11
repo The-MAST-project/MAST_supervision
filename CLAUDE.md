@@ -1,5 +1,6 @@
 # MAST_supervision — agent notes
 
+- **Operational how-tos live in the [MAST wiki](https://github.com/The-MAST-project/MAST/wiki), not in this repo.** A file carrying a `# How-to:` pointer, or covered by a wiki page's `triggers`, updates that page in the same change; run `/wiki-sweep` before opening a PR. The wiki is public.
 - **Design source:** `mast-claude-config/plans/supervisor-design.md`. Read it before changing behavior; its decisions are ratified with Arie.
 - **Branches:** supervisor work targets `main`. A change that needs an unmerged MAST_common change uses a branch named like common's, so CI pairs them. See `docs/decisions/2026-10-07-supervisor-work-lands-on-main.md`.
 - **Layout:** the repo root is the `supervision` package, imported through `mast.pth` from `<top>/supervision/`. Never pip-install it; never set `PYTHONPATH` on a machine (tests set it to `<top>`).
