@@ -9,6 +9,7 @@ import common.opmode as common_opmode
 from supervision.state import (
     STALE_MARGIN_SECONDS,
     OpMode,
+    OpState,
     Phase,
     ProcessState,
     ProcessStatus,
@@ -49,7 +50,11 @@ def _resource(state: ResourceState, name: str = "share") -> ResourceStatus:
 
 @pytest.mark.parametrize(
     ("copy", "original"),
-    [(SupervisionMode, common_supervisor.SupervisionMode), (OpMode, common_opmode.OpMode)],
+    [
+        (SupervisionMode, common_supervisor.SupervisionMode),
+        (OpMode, common_opmode.OpMode),
+        (OpState, common_opmode.OpState),
+    ],
 )
 def test_local_enum_copies_match_common(copy, original) -> None:
     # The copies exist only to keep common.config out of the import; see MAST_supervision#2.
@@ -163,3 +168,11 @@ def test_a_snapshot_is_stale_only_past_its_heartbeat_and_the_longest_tick() -> N
 
     assert not snap.is_stale(limit)
     assert snap.is_stale(limit + timedelta(seconds=1))
+
+
+def test_a_stopped_program_is_a_warning() -> None:
+    assert ProcessState.STOPPED.severity is Severity.WARNING
+
+
+def test_an_observed_program_can_be_stopped() -> None:
+    assert _process(ProcessState.STOPPED, "phd2", SupervisionMode.OBSERVED).state is ProcessState.STOPPED

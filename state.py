@@ -7,8 +7,8 @@ whole-reference assignment; readers never see live state, so a snapshot is froze
 It is a Pydantic model so FastAPI serializes it with no second schema, and it imports
 neither ``tkinter`` nor ``fastapi``, so it is tested on Linux CI.
 
-:class:`SupervisionMode` and :class:`OpMode` are copies of MAST_common's
-``common.config.supervisor.SupervisionMode`` and ``common.opmode.OpMode``: importing
+:class:`SupervisionMode`, :class:`OpMode` and :class:`OpState` are copies of MAST_common's
+``common.config.supervisor.SupervisionMode``, ``common.opmode.OpMode`` and ``common.opmode.OpState``: importing
 ``common.config`` builds a ``Filer`` and imports pymongo, which no consumer of this model
 should pay for. ``tests/test_supervisor_state.py`` pins the copies to the originals;
 consolidating them is MAST_supervision#2.
@@ -44,6 +44,15 @@ class SupervisionMode(StrEnum):
 class OpMode(StrEnum):
     DEVELOPMENT = "development"
     PRODUCTION = "production"
+
+
+class OpState(StrEnum):
+    """Where the app is in its lifecycle, as its ``status`` reports it."""
+
+    INITIALIZING = "initializing"
+    INITIALIZED = "initialized"
+    STARTED_UP = "startedup"
+    SHUT_DOWN = "shutdown"
 
 
 class Severity(IntEnum):
@@ -89,6 +98,9 @@ class ProcessState(StrEnum):
     # its normal resting condition, so it is never a fault: a fleet view over /status that
     # reds out every developer machine is one nobody reads.
     NOT_SUPERVISED = "not_supervised"
+    # Being stopped, or stopped, because the supervisor was asked to (a teardown): never
+    # restarted. A warning, not a fault: the program is down on purpose.
+    STOPPED = "stopped"
 
     @property
     def severity(self) -> Severity:
@@ -100,6 +112,7 @@ _PROCESS_SEVERITY = {
     ProcessState.NOT_SUPERVISED: Severity.OK,
     ProcessState.STARTING: Severity.WARNING,
     ProcessState.UNHEALTHY: Severity.WARNING,
+    ProcessState.STOPPED: Severity.WARNING,
     ProcessState.CRASH_LOOPED: Severity.ERROR,
     ProcessState.BLOCKED: Severity.ERROR,
 }
@@ -144,6 +157,7 @@ class ProcessStatus(_Frozen):
     last_exit_code: int | None = None
     detail: str = ""
     since: AwareDatetime  # when the program entered its current state
+    opstate: OpState | None = None  # what the running program last reported, when it reports one (the app)
 
     @model_validator(mode="after")
     def _mode_agrees_with_state(self) -> Self:

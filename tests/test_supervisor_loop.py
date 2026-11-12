@@ -12,18 +12,21 @@ from common.config.supervisor import SupervisorConfig
 from supervision.clock import Clock
 from supervision.launcher import LaunchSettings
 from supervision.managed import FoundProcess, RestartPolicy, comparable_path
-from supervision.probes import HealthResult
+from supervision.probes import HealthResult, ShutdownOutcome
 from supervision.programs import ResolvedProgram
 from supervision.ramdisk import RESTART_TASK, RamdiskReviver
 from supervision.resources import ProbeResult, Resource
-from supervision.state import OpMode, Phase, ProcessState, ResourceState, SupervisionMode
-from supervision.supervisor import ConfigStatus, LoadedConfig, ResourceSettings, Supervisor, Wiring
+from supervision.state import OpMode, OpState, Phase, ProcessState, ResourceState, SupervisionMode
+from supervision.supervisor import ConfigStatus, LoadedConfig, ResourceSettings, StopFlavor, Supervisor, Wiring
 
 T0 = datetime(2026, 10, 11, 18, 0, tzinfo=UTC)
 TOP = Path("/top")
 PYTHON = Path("/top/.venv/bin/python")
 APP = str(TOP / "unit" / "src" / "app.py")
 PWI4 = "/vendor/PWI4.exe"
+PHD2 = "/vendor/phd2.exe"
+PS3CLI = "/vendor/ps3cli.exe"
+APP_PORT = 8000
 OURS = 1
 BUDGET = 300.0
 HEARTBEAT = 300.0
@@ -57,6 +60,11 @@ class Proc:
     argv: list[str]
     running: bool = True
     parent: int | None = None
+    survives_kill: bool = False
+
+    @property
+    def name(self) -> str:
+        return "app.py" if APP in self.argv else Path(self.argv[0]).name
 
 
 @dataclass
@@ -64,6 +72,7 @@ class FakeApi:
     procs: dict[int, Proc] = field(default_factory=dict)
     spawns: list[tuple[list[str], Path, Mapping[str, str] | None]] = field(default_factory=list)
     stops: list[int] = field(default_factory=list)
+    events: list[str] = field(default_factory=list)  # terminations and app shutdowns, in order
     next_pid: int = 100
 
     def find(self, image: str, argument: str | None = None) -> list[FoundProcess]:
@@ -93,9 +102,14 @@ class FakeApi:
 
     def terminate(self, pid: int) -> None:
         self.stops.append(pid)
+        self.events.append(f"terminate {self.procs[pid].name}")
+        if not self.procs[pid].survives_kill:
+            self.procs[pid].running = False
 
     def kill(self, pid: int) -> None:
         self.stops.append(pid)
+        if not self.procs[pid].survives_kill:
+            self.procs[pid].running = False
 
     def spawned(self, name: str) -> list[list[str]]:
         """The spawns whose program or any argument is a file called ``name``."""
@@ -124,6 +138,8 @@ class World:
     config_attempts: int = 0
     ramdisk: ProbeResult | None = None  # None: no RAM disk probe
     ramdisk_runs: list[list[str]] = field(default_factory=list)
+    full_set: bool = False  # PWI4, PHD2 observed and ps3cli, as a unit is configured
+    app_opstate: OpState | None = None
 
     def load_config(self) -> LoadedConfig:
         self.config_attempts += 1
@@ -132,7 +148,7 @@ class World:
         return LoadedConfig(
             opmode=self.opmode,
             supervisor=SupervisorConfig(heartbeat_interval_seconds=CONFIGURED_HEARTBEAT),
-            app_port=8000,
+            app_port=APP_PORT,
             status=self.status(),
         )
 
@@ -141,7 +157,22 @@ class World:
 
     def programs(self, _loaded: LoadedConfig) -> list[ResolvedProgram]:
         policy = RestartPolicy()
-        return [ResolvedProgram("pwi4", self.program_mode, (PWI4,), lambda: HEALTHY, policy, self.problem)]
+        programs = [ResolvedProgram("pwi4", self.program_mode, (PWI4,), lambda: HEALTHY, policy, self.problem)]
+        if self.full_set:
+            programs += [
+                ResolvedProgram("phd2", SupervisionMode.OBSERVED, (Path(PHD2).name,), lambda: HEALTHY, policy),
+                ResolvedProgram("ps3cli", SupervisionMode.SUPERVISED, (PS3CLI, "--server"), lambda: HEALTHY, policy),
+            ]
+        return programs
+
+    def app_health(self, port: int) -> HealthResult:
+        if self.app_opstate is None:
+            return HEALTHY
+        return HealthResult(True, f"opstate={self.app_opstate}", self.app_opstate)
+
+    def shutdown_app(self, port: int) -> ShutdownOutcome:
+        self.api.events.append(f"shutdown {port}")
+        return ShutdownOutcome(True, "opstate=shutdown")
 
     def ramdisk_probe(self) -> ProbeResult:
         assert self.ramdisk is not None
@@ -173,10 +204,12 @@ class World:
             config_status=self.status,
             resolve_programs=self.programs,
             launch_settings=lambda _: LaunchSettings(python=PYTHON, vscode_exe=self.vscode, workspace="mast-{role}.ws"),
-            app_probe=lambda port: HEALTHY,
+            app_probe=self.app_health,
             heartbeat_seconds=HEARTBEAT,
             submit=run_now,
             ramdisk=reviver,
+            app_shutdown=self.shutdown_app,
+            sleep=self.fake.advance,
         )
         return Supervisor(self.role, "mast07", TOP, ENV, wiring, no_app=self.no_app)
 
@@ -507,3 +540,110 @@ def test_a_ramdisk_missing_during_the_resource_wait_is_not_revived() -> None:
     assert set(phases) == {Phase.WAITING_FOR_RESOURCES}
     assert world.ramdisk_runs == []
     assert supervisor.snapshot.ramdisk_revival is None
+
+
+# --- the teardown ------------------------------------------------------------------------------
+
+TORN_DOWN_IN_ORDER = ["terminate app.py", "terminate phd2.exe", "terminate PWI4.exe", "terminate ps3cli.exe"]
+
+
+def _running_unit(**kwargs) -> tuple[World, Supervisor]:
+    world = World(opmode=OpMode.PRODUCTION, full_set=True, **kwargs)
+    world.api.procs[50] = Proc([PHD2])  # PHD2 is the app's to start; the supervisor only observes it
+    supervisor = world.supervisor()
+    ticks(world, supervisor, 8, step=20.0)
+    return world, supervisor
+
+
+def _tear_down(supervisor: Supervisor) -> None:
+    stop = threading.Event()
+    stop.set()
+    supervisor.run(stop, StopFlavor.TEAR_DOWN)
+
+
+def test_a_teardown_stops_the_app_then_phd2_pwi4_and_ps3cli() -> None:
+    world, supervisor = _running_unit()
+
+    _tear_down(supervisor)
+
+    assert world.api.events == TORN_DOWN_IN_ORDER
+    for name in ("app", "phd2", "pwi4", "ps3cli"):
+        assert row(supervisor, name).state is ProcessState.STOPPED
+    assert supervisor.snapshot.phase is Phase.STOPPING
+
+
+def test_nothing_is_respawned_after_a_teardown() -> None:
+    world, supervisor = _running_unit()
+    spawned = len(world.api.spawns)
+
+    _tear_down(supervisor)
+    world.fake.advance(600.0)
+    supervisor.tick()
+
+    assert len(world.api.spawns) == spawned
+
+
+def test_a_started_up_app_is_shut_down_before_it_is_stopped() -> None:
+    world, supervisor = _running_unit(app_opstate=OpState.STARTED_UP)
+
+    _tear_down(supervisor)
+
+    assert world.api.events == [f"shutdown {APP_PORT}", *TORN_DOWN_IN_ORDER]
+
+
+@pytest.mark.parametrize("opstate", [OpState.INITIALIZED, OpState.SHUT_DOWN, None])
+def test_an_app_not_started_up_is_never_sent_a_shutdown(opstate: OpState | None) -> None:
+    world, supervisor = _running_unit(app_opstate=opstate)
+
+    _tear_down(supervisor)
+
+    assert world.api.events == TORN_DOWN_IN_ORDER
+
+
+def test_a_program_that_survives_kill_does_not_hold_up_the_rest() -> None:
+    world, supervisor = _running_unit()
+    pwi4 = next(pid for pid, p in world.api.procs.items() if p.name == "PWI4.exe")
+    world.api.procs[pwi4].survives_kill = True
+
+    _tear_down(supervisor)
+
+    assert world.api.events == TORN_DOWN_IN_ORDER
+    assert row(supervisor, "pwi4").state is ProcessState.BLOCKED
+    assert row(supervisor, "ps3cli").state is ProcessState.STOPPED
+
+
+def test_an_adopted_app_is_torn_down_too() -> None:
+    world = World(opmode=OpMode.PRODUCTION, full_set=True)
+    world.api.procs[50] = Proc([PHD2])
+    world.api.procs[999] = Proc([str(PYTHON), APP])
+    supervisor = world.supervisor()
+    ticks(world, supervisor, 8, step=20.0)
+    assert row(supervisor, "app").pid == 999
+
+    _tear_down(supervisor)
+
+    assert world.api.events == TORN_DOWN_IN_ORDER
+
+
+def test_a_loop_that_dies_leaves_the_programs_running_whatever_the_flavor(monkeypatch) -> None:
+    world, supervisor = _running_unit()
+
+    def broken() -> None:
+        raise RuntimeError("a bug in a tick")
+
+    monkeypatch.setattr(supervisor, "tick", broken)
+    with pytest.raises(RuntimeError):
+        supervisor.run(threading.Event(), StopFlavor.TEAR_DOWN)
+
+    assert world.api.events == []
+    assert supervisor.snapshot.phase is Phase.STOPPING
+
+
+def test_leave_running_is_the_default_flavor() -> None:
+    world, supervisor = _running_unit()
+    stop = threading.Event()
+    stop.set()
+
+    supervisor.run(stop)
+
+    assert world.api.events == []
