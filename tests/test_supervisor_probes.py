@@ -25,6 +25,7 @@ from supervision.state import OpState
 
 HOST = "127.0.0.1"
 SHORT = 0.3
+REFUSAL_WAIT = 5.0  # Windows refuses a closed local port only after about 2 s
 POLL_SECONDS = 0.02  # serve_forever polls for shutdown at this interval
 PWI4_OK = (
     "pwi4.version=4.1.6\n"
@@ -322,7 +323,7 @@ def test_a_shutdown_that_does_not_complete_is_bounded() -> None:
 
 
 def test_a_shutdown_nobody_answers_is_reported_not_raised() -> None:
-    outcome = shutdown_app(closed_port(), "unit", HOST, wait=SHORT, poll=POLL_SECONDS)
+    outcome = shutdown_app(closed_port(), "unit", HOST, wait=REFUSAL_WAIT, poll=POLL_SECONDS)
 
     assert not outcome.completed
     assert outcome.detail.endswith("refused")
