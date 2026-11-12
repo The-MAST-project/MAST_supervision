@@ -12,16 +12,20 @@ import pytest
 from supervision.probes import (
     PHD2_REQUEST_ID,
     HealthResult,
+    ShutdownOutcome,
     parse_pwi4_status,
     probe_app,
     probe_phd2,
     probe_ps3cli,
     probe_pwi4,
     pwi4_status_is_viable,
+    shutdown_app,
 )
+from supervision.state import OpState
 
 HOST = "127.0.0.1"
 SHORT = 0.3
+REFUSAL_WAIT = 5.0  # Windows refuses a closed local port only after about 2 s
 POLL_SECONDS = 0.02  # serve_forever polls for shutdown at this interval
 PWI4_OK = (
     "pwi4.version=4.1.6\n"
@@ -212,7 +216,12 @@ def _status(value: object) -> bytes:
 
 def test_app_healthy_reports_its_opstate() -> None:
     with http_server(200, _status({"operational": False, "opstate": "initialized"})) as port:
-        assert probe_app(port, "unit", HOST) == HealthResult(True, "opstate=initialized")
+        assert probe_app(port, "unit", HOST) == HealthResult(True, "opstate=initialized", OpState.INITIALIZED)
+
+
+def test_an_opstate_this_supervisor_does_not_know_is_shown_but_not_structured() -> None:
+    with http_server(200, _status({"opstate": "running"})) as port:
+        assert probe_app(port, "unit", HOST) == HealthResult(True, "opstate=running")
 
 
 def test_app_without_opstate_is_healthy() -> None:
@@ -249,3 +258,72 @@ def test_app_unhealthy(status: int, body: bytes, reason: str) -> None:
         result = probe_app(port, "unit", HOST)
     assert not result.healthy
     assert reason in result.detail
+
+
+# --- shutting the app down ------------------------------------------------------------------
+
+
+@contextmanager
+def unit_app(shuts_down: bool = True) -> Iterator[tuple[int, list[str]]]:
+    """A unit app: ``PUT .../shutdown`` is recorded and, when ``shuts_down``, its status says so next.
+
+    Yields the port and the requests seen, as ``METHOD path``.
+    """
+    seen: list[str] = []
+    state = {"opstate": "startedup"}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_PUT(self) -> None:  # noqa: N802 -- http.server's name
+            seen.append(f"PUT {self.path}")
+            if shuts_down:
+                state["opstate"] = "shutdown"
+            self._answer(_status(None))
+
+        def do_GET(self) -> None:  # noqa: N802 -- http.server's name
+            seen.append(f"GET {self.path}")
+            self._answer(_status(dict(state)))
+
+        def _answer(self, body: bytes) -> None:
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer((HOST, 0), Handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, args=(POLL_SECONDS,), daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1], seen
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_shutdown_is_sent_and_waited_for_until_the_app_reports_it() -> None:
+    with unit_app() as (port, seen):
+        outcome = shutdown_app(port, "unit", HOST, wait=SHORT * 10, poll=POLL_SECONDS)
+
+    assert outcome == ShutdownOutcome(True, "opstate=shutdown")
+    assert seen[0] == "PUT /mast/api/v1/unit/shutdown"
+    assert seen[1] == "GET /mast/api/v1/unit/status"
+
+
+def test_a_shutdown_that_does_not_complete_is_bounded() -> None:
+    with unit_app(shuts_down=False) as (port, _):
+        started = time.monotonic()
+        outcome = shutdown_app(port, "unit", HOST, wait=SHORT, poll=POLL_SECONDS)
+
+    assert not outcome.completed
+    assert "startedup" in outcome.detail
+    assert time.monotonic() - started < SHORT * 5
+
+
+def test_a_shutdown_nobody_answers_is_reported_not_raised() -> None:
+    outcome = shutdown_app(closed_port(), "unit", HOST, wait=REFUSAL_WAIT, poll=POLL_SECONDS)
+
+    assert not outcome.completed
+    assert outcome.detail.endswith("refused")

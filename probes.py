@@ -19,6 +19,10 @@ than the slowest legitimate ``status`` reply: ``Unit.status()`` reads PHD2 twice
 **HTTP bypasses any proxy.** The units carry ``http_proxy`` in their environment, and
 ``urllib`` would send a request for ``127.0.0.1`` through it.
 
+**One call here acts rather than probes**: :func:`shutdown_app`, which a teardown sends a
+started-up unit app before stopping it. A ``TerminateProcess`` skips the app's own shutdown, so
+without it a started-up unit would be left with its covers open.
+
 **A refused connection is reported as refused.** On the units a connect to a closed local
 port is refused only after about 2 s (measured 2026-10-08 on mast01-mast08), so a connect
 timeout at or below that would report "nothing listening" as "no answer".
@@ -34,9 +38,10 @@ import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import URLError
-from urllib.request import ProxyHandler, build_opener
+from urllib.request import ProxyHandler, Request, build_opener
 
 from common.const import Const
+from supervision.state import OpState
 
 LOCALHOST = "127.0.0.1"
 
@@ -55,11 +60,16 @@ CONNECT_TIMEOUT_SECONDS = 3.0
 PWI4_TIMEOUT_SECONDS = 10.0  # pwi4_client's timeout_seconds
 PHD2_TIMEOUT_SECONDS = 30.0  # unit.phd2's DEFAULT_RPC_TIMEOUT
 APP_STATUS_TIMEOUT_SECONDS = 70.0  # above Unit.status()'s two back-to-back PHD2 RPCs
+# A unit's shutdown completes asynchronously: dispatch can wait up to 120 s for an abort, and
+# MAST_unit's SHUTDOWN_SETTLE_TIMEOUT_SECONDS (70 s) counts from the end of dispatch.
+APP_SHUTDOWN_WAIT_SECONDS = 200.0
+APP_SHUTDOWN_POLL_SECONDS = 2.0
 
 STATUS_PATHS = {
     "unit": f"{Const.BASE_UNIT_PATH}/status",
     "spec": f"{Const.BASE_SPEC_PATH}/status",
 }
+SHUTDOWN_PATHS = {"unit": f"{Const.BASE_UNIT_PATH}/shutdown"}
 
 _opener = build_opener(ProxyHandler({}))
 
@@ -68,10 +78,22 @@ _opener = build_opener(ProxyHandler({}))
 class HealthResult:
     healthy: bool
     detail: str = ""
+    opstate: OpState | None = None  # the app's lifecycle state, when its status reports one this supervisor knows
+
+
+@dataclass(frozen=True, slots=True)
+class ShutdownOutcome:
+    completed: bool  # the app reported its shutdown done within the wait
+    detail: str
 
 
 def _http_get(url: str, timeout: float) -> bytes:
     with _opener.open(url, timeout=timeout) as response:
+        return response.read()
+
+
+def _http_put(url: str, timeout: float) -> bytes:
+    with _opener.open(Request(url, data=b"", method="PUT"), timeout=timeout) as response:
         return response.read()
 
 
@@ -161,7 +183,8 @@ def probe_ps3cli(host: str = LOCALHOST, port: int = PS3CLI_PORT) -> HealthResult
 def probe_app(port: int, role: str, host: str = LOCALHOST, timeout: float = APP_STATUS_TIMEOUT_SECONDS) -> HealthResult:
     """Healthy when ``status`` answers 200 with a ``value``; ``operational`` is health, not liveness.
 
-    ``detail`` carries the app's ``opstate`` when its status reports one, for display only.
+    The app's ``opstate`` is in ``detail`` whenever its status reports one, and in ``opstate``
+    when it is one this supervisor knows: a teardown decides on it.
     """
     url = f"http://{host}:{port}{STATUS_PATHS[role]}"
     try:
@@ -175,5 +198,31 @@ def probe_app(port: int, role: str, host: str = LOCALHOST, timeout: float = APP_
     if not isinstance(document, dict) or "value" not in document:
         return HealthResult(False, "status has no value")
     value = document["value"]
-    opstate = value.get("opstate") if isinstance(value, dict) else None
-    return HealthResult(True, f"opstate={opstate}" if opstate else "answering")
+    reported = value.get("opstate") if isinstance(value, dict) else None
+    if not reported:
+        return HealthResult(True, "answering")
+    return HealthResult(True, f"opstate={reported}", OpState(reported) if reported in OpState else None)
+
+
+def shutdown_app(
+    port: int,
+    role: str,
+    host: str = LOCALHOST,
+    wait: float = APP_SHUTDOWN_WAIT_SECONDS,
+    poll: float = APP_SHUTDOWN_POLL_SECONDS,
+) -> ShutdownOutcome:
+    """``PUT`` the app's ``shutdown``, then read its status until it reports ``shutdown`` or ``wait`` runs out."""
+    deadline = time.monotonic() + wait
+    url = f"http://{host}:{port}{SHUTDOWN_PATHS[role]}"
+    try:
+        _http_put(url, min(wait, APP_STATUS_TIMEOUT_SECONDS))
+    except OSError as e:
+        return ShutdownOutcome(False, f"{url} {_describe(e)}")
+    last = "no status read"
+    while (remaining := deadline - time.monotonic()) > 0:
+        result = probe_app(port, role, host, timeout=min(remaining, APP_STATUS_TIMEOUT_SECONDS))
+        last = result.detail
+        if result.opstate is OpState.SHUT_DOWN:
+            return ShutdownOutcome(True, last)
+        time.sleep(min(poll, max(deadline - time.monotonic(), 0.0)))
+    return ShutdownOutcome(False, f"not shut down within {wait:g}s; last: {last}")

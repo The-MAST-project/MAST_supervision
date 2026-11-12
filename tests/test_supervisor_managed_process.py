@@ -23,7 +23,7 @@ from supervision.managed import (
     names_argument,
 )
 from supervision.probes import HealthResult
-from supervision.state import ProcessState, Severity, SupervisionMode
+from supervision.state import OpState, ProcessState, ProcessStatus, Severity, SupervisionMode
 
 T0 = datetime(2026, 10, 8, 18, 0, tzinfo=UTC)
 OURS = 1
@@ -608,3 +608,176 @@ def test_a_console_child_gets_a_console_of_its_own(monkeypatch) -> None:
     assert seen["creationflags"] == SPAWN_FLAGS
     if sys.platform == "win32":
         assert SPAWN_FLAGS & subprocess.CREATE_NO_WINDOW
+
+
+# --- a stop on request: terminate, grace, kill, and never a respawn --------------------------
+
+STOP = "teardown"
+
+
+def _stopped(managed: ManagedProcess, fake: FakeClock, ticks: int = 6) -> ProcessStatus:
+    """Tick past both graces (terminate, then kill) and a backoff that would respawn."""
+    status = managed.tick()
+    for _ in range(ticks):
+        fake.advance(max(POLICY.stop_grace_seconds, POLICY.restart_backoff_cap_seconds))
+        status = managed.tick()
+    return status
+
+
+def test_a_stopped_program_is_terminated_and_never_respawned() -> None:
+    api = FakeApi()
+    fake = FakeClock()
+    managed = _managed(api, fake, Probe())
+    pid = managed.tick().pid
+
+    managed.stop(STOP)
+    status = _stopped(managed, fake)
+
+    assert api.terminated == [pid]
+    assert len(api.spawns) == 1
+    assert (status.state, status.pid) == (ProcessState.STOPPED, None)
+    assert managed.stopped
+
+
+def test_an_adopted_program_is_stopped_too() -> None:
+    api = FakeApi({7: FakeProcess(session=OURS)})
+    fake = FakeClock()
+    managed = _managed(api, fake, Probe())
+    managed.tick()
+
+    managed.stop(STOP)
+    status = _stopped(managed, fake)
+
+    assert api.terminated == [7]
+    assert api.spawns == []
+    assert status.state is ProcessState.STOPPED
+
+
+def test_an_observed_program_is_stopped_when_asked() -> None:
+    api = FakeApi({7: FakeProcess(session=OURS)})
+    fake = FakeClock()
+    managed = _managed(api, fake, Probe(), mode=SupervisionMode.OBSERVED)
+    managed.tick()
+
+    managed.stop(STOP)
+
+    assert _stopped(managed, fake).state is ProcessState.STOPPED
+    assert api.terminated == [7]
+
+
+def test_a_stopped_program_that_ignores_terminate_is_killed_after_the_grace() -> None:
+    api = FakeApi({7: FakeProcess(session=OURS, dies_on_terminate=False)})
+    fake = FakeClock()
+    managed = _managed(api, fake, Probe())
+    managed.tick()
+
+    managed.stop(STOP)
+    managed.tick()
+    assert api.killed == []
+    fake.advance(POLICY.stop_grace_seconds)
+    status = managed.tick()
+
+    assert api.killed == [7]
+    assert status.state is ProcessState.STOPPED
+    assert managed.stopped
+
+
+def test_a_stopped_program_that_survives_kill_is_blocked_and_the_stop_is_over() -> None:
+    api = FakeApi({7: FakeProcess(session=OURS, dies_on_terminate=False)})
+    api.kill = lambda pid: api.killed.append(pid)  # the kill does nothing
+    fake = FakeClock()
+    managed = _managed(api, fake, Probe())
+    managed.tick()
+
+    managed.stop(STOP)
+    status = _stopped(managed, fake)
+
+    assert api.killed == [7]
+    assert status.state is ProcessState.BLOCKED
+    assert "survived kill" in status.detail
+    assert managed.stopped
+
+
+def test_a_program_that_refuses_terminate_is_blocked_and_the_stop_is_over() -> None:
+    api = FakeApi({7: FakeProcess(session=OURS)}, signal_error=PermissionError("access denied"))
+    fake = FakeClock()
+    managed = _managed(api, fake, Probe())
+    managed.tick()
+
+    managed.stop(STOP)
+
+    assert managed.tick().state is ProcessState.BLOCKED
+    assert managed.stopped
+
+
+def test_a_program_not_running_is_stopped_at_once_and_never_spawned() -> None:
+    api = FakeApi()
+    fake = FakeClock()
+    managed = _managed(api, fake, Probe())
+
+    managed.stop(STOP)
+    status = _stopped(managed, fake)
+
+    assert api.spawns == []
+    assert status.state is ProcessState.STOPPED
+    assert managed.stopped
+
+
+def test_a_stop_during_a_restart_ends_it_without_a_respawn() -> None:
+    api = FakeApi({7: FakeProcess(session=OURS, dies_on_terminate=False)})
+    fake = FakeClock()
+    managed = _managed(api, fake, Probe(SICK))
+    _ticks(managed, fake, POLICY.unhealthy_threshold)
+    assert api.terminated == [7]
+
+    managed.stop(STOP)
+    status = _stopped(managed, fake)
+
+    assert api.spawns == []
+    assert status.state is ProcessState.STOPPED
+
+
+def test_a_stop_twice_is_one_stop() -> None:
+    api = FakeApi({7: FakeProcess(session=OURS)})
+    fake = FakeClock()
+    managed = _managed(api, fake, Probe())
+    managed.tick()
+
+    managed.stop(STOP)
+    managed.stop(STOP)
+    _stopped(managed, fake)
+    managed.stop(STOP)
+
+    assert api.terminated == [7]
+
+
+# --- the opstate a program reports ----------------------------------------------------------
+
+
+def test_the_opstate_of_a_healthy_probe_is_on_the_row() -> None:
+    api = FakeApi({7: FakeProcess(session=OURS)})
+    managed = _managed(api, FakeClock(), Probe(HealthResult(True, "opstate=startedup", OpState.STARTED_UP)))
+
+    assert managed.tick().opstate is OpState.STARTED_UP
+
+
+def test_a_failed_probe_keeps_the_last_opstate() -> None:
+    api = FakeApi({7: FakeProcess(session=OURS)})
+    fake = FakeClock()
+    probe = Probe(HealthResult(True, "opstate=startedup", OpState.STARTED_UP))
+    managed = _managed(api, fake, probe)
+    managed.tick()
+    probe.result = SICK
+    fake.advance(POLICY.probe_interval_seconds)
+
+    assert managed.tick().opstate is OpState.STARTED_UP
+
+
+def test_a_program_that_exits_has_no_opstate() -> None:
+    api = FakeApi({7: FakeProcess(session=OURS)})
+    fake = FakeClock()
+    managed = _managed(api, fake, Probe(HealthResult(True, "opstate=startedup", OpState.STARTED_UP)))
+    managed.tick()
+    api.processes[7].running = False
+
+    assert managed.tick().opstate is None

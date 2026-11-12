@@ -26,6 +26,11 @@ MAST_common's ``process.py`` starts them). Sharing the supervisor's console woul
 supervisor's Ctrl-C and its window's close, and stopping the supervisor must leave the programs
 running. GUI programs such as PWI4 ignore the flag.
 
+**A stop on request is final.** :meth:`ManagedProcess.stop` takes the same terminate, grace,
+kill path as a restart, and then never respawns: the row ends ``stopped``, or ``blocked`` when
+the program refuses terminate or survives kill. It stops an observed program too; whether to
+ask is the caller's decision (the teardown asks for PHD2, ``supervisor.py``).
+
 **A spawn gets a startup grace.** Failed probes do not count toward the threshold until the
 program has probed healthy once or :data:`STARTUP_GRACE_SECONDS` has passed, so a slow cold
 start is ``starting``, not a restart loop. An adopted program was already running and gets none.
@@ -53,7 +58,7 @@ import psutil
 from common.mast_logging import get_logger
 from supervision.clock import Clock
 from supervision.probes import HealthResult
-from supervision.state import ProcessState, ProcessStatus, SupervisionMode
+from supervision.state import OpState, ProcessState, ProcessStatus, SupervisionMode
 
 logger = get_logger(__name__)
 
@@ -129,6 +134,7 @@ class _Stopping:
     kill_at: float
     reason: str
     killed: bool = False
+    final: bool = False  # a stop on request: no respawn once it is down
 
 
 @dataclass(slots=True)
@@ -140,6 +146,14 @@ class _Running:
     probe: Future[HealthResult] | None = None
     next_probe_at: float = 0.0
     unstoppable: bool = False  # a stop was refused (e.g. an elevated copy); not attempted again
+    opstate: OpState | None = None  # from the last healthy probe that reported one
+
+
+@dataclass(slots=True)
+class _Stopped:
+    """Stopped on request; nothing more is done. A survivor's pid is kept on the row."""
+
+    pid: int | None = None
 
 
 @dataclass(slots=True)
@@ -179,7 +193,7 @@ class ManagedProcess:
         self._submit = submit or ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"probe-{name}").submit
         self._backoff = Backoff(policy.restart_backoff_seconds, policy.restart_backoff_cap_seconds)
         self._restart_times: deque[float] = deque()
-        self._phase: _Absent | _Running | _Stopping = _Absent()
+        self._phase: _Absent | _Running | _Stopping | _Stopped = _Absent()
         self._state = ProcessState.STARTING
         self._detail = "not yet looked for"
         self._since = clock.wall()
@@ -192,8 +206,14 @@ class ManagedProcess:
     def supervised(self) -> bool:
         return self._mode is SupervisionMode.SUPERVISED
 
+    @property
+    def stopped(self) -> bool:
+        """True once a stop on request is over: the program is down, or could not be brought down."""
+        return isinstance(self._phase, _Stopped)
+
     def status(self) -> ProcessStatus:
-        pid = self._phase.pid if isinstance(self._phase, _Running | _Stopping) else None
+        pid = self._phase.pid if isinstance(self._phase, _Running | _Stopping | _Stopped) else None
+        opstate = self._phase.opstate if isinstance(self._phase, _Running) else None
         return ProcessStatus(
             name=self.name,
             mode=self._mode,
@@ -203,6 +223,7 @@ class ManagedProcess:
             last_exit_code=self._last_exit_code,
             detail=self._detail,
             since=self._since,
+            opstate=opstate,
         )
 
     def tick(self) -> ProcessStatus:
@@ -216,9 +237,29 @@ class ManagedProcess:
                     self._tick_running(phase, now)
                 case _Stopping():
                     self._tick_stopping(phase, now)
+                case _Stopped():
+                    pass
             if self._phase is phase:
                 break
         return self.status()
+
+    def stop(self, reason: str) -> None:
+        """Stop the program for good: terminate, kill after the grace, and never respawn it."""
+        now = self._clock.monotonic()
+        match self._phase:
+            case _Running() as running if running.unstoppable:
+                self._phase = _Stopped(running.pid)
+                self._set(ProcessState.BLOCKED, f"{reason}; pid {running.pid} cannot be stopped")
+            case _Running() as running:
+                self._terminate(running, now, reason, final=True)
+            case _Stopping() as stopping:
+                stopping.final = True
+                stopping.reason = reason
+            case _Absent():
+                self._phase = _Stopped()
+                self._set(ProcessState.STOPPED, f"{reason}; was not running")
+            case _Stopped():
+                pass
 
     def retry(self) -> None:
         """Leave ``crash_looped``: forget the restart history and look for the program again."""
@@ -311,6 +352,7 @@ class ManagedProcess:
 
     def _apply(self, running: _Running, result: HealthResult, now: float) -> None:
         if result.healthy:
+            running.opstate = result.opstate
             running.probed_healthy = True
             running.failures = 0
             self._backoff.reset()
@@ -345,21 +387,30 @@ class ManagedProcess:
             self._set(ProcessState.UNHEALTHY, reason)
 
     def _stop(self, running: _Running, now: float, reason: str) -> None:
+        self._terminate(running, now, reason, final=False)
+
+    def _terminate(self, running: _Running, now: float, reason: str, final: bool) -> None:
         logger.warning(f"{self.name}: terminating pid {running.pid} ({reason})")
         try:
             self._api.terminate(running.pid)
         except OSError as e:
             running.unstoppable = True
+            if final:
+                self._phase = _Stopped(running.pid)
             self._set(ProcessState.BLOCKED, f"{reason}; cannot stop pid {running.pid}: {e}")
             return
-        self._phase = _Stopping(pid=running.pid, kill_at=now + self._policy.stop_grace_seconds, reason=reason)
-        self._set(ProcessState.UNHEALTHY, f"{reason}; stopping pid {running.pid}")
+        kill_at = now + self._policy.stop_grace_seconds
+        self._phase = _Stopping(pid=running.pid, kill_at=kill_at, reason=reason, final=final)
+        state = ProcessState.STOPPED if final else ProcessState.UNHEALTHY
+        self._set(state, f"{reason}; stopping pid {running.pid}")
 
     def _tick_stopping(self, stopping: _Stopping, now: float) -> None:
         if self._api.is_running(stopping.pid):
             if now < stopping.kill_at:
                 return
             if stopping.killed:
+                if stopping.final:
+                    self._phase = _Stopped(stopping.pid)
                 self._set(ProcessState.BLOCKED, f"{stopping.reason}; pid {stopping.pid} survived kill")
                 return
             logger.warning(f"{self.name}: killing pid {stopping.pid}, still running after the grace")
@@ -373,6 +424,10 @@ class ManagedProcess:
             if self._api.is_running(stopping.pid):
                 return
         self._last_exit_code = self._api.exit_code(stopping.pid)
+        if stopping.final:
+            self._phase = _Stopped()
+            self._set(ProcessState.STOPPED, f"{stopping.reason}; pid {stopping.pid} stopped")
+            return
         self._schedule_restart(now, stopping.reason)
 
     def _schedule_restart(self, now: float, reason: str) -> None:

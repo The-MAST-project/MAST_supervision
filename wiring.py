@@ -17,7 +17,7 @@ from supervision.clock import Clock
 from supervision.launcher import LaunchSettings
 from supervision.locate import locate_vscode_exe
 from supervision.managed import OsProcessApi
-from supervision.probes import probe_app
+from supervision.probes import probe_app, shutdown_app
 from supervision.programs import ResolvedProgram, resolve_programs
 from supervision.ramdisk import RamdiskReviver, probe_writable, run_command
 from supervision.resources import ProbeResult, Resource, probe_network, probe_ramdisk, probe_share
@@ -119,4 +119,6 @@ def real_wiring(role: str, env: Mapping[str, str], home: Path) -> Wiring:
         app_probe=lambda port: probe_app(port, role),
         heartbeat_seconds=SupervisorConfig().heartbeat_interval_seconds,
         ramdisk=reviver,
+        # Only a unit has a lifecycle shutdown that closes its covers; a spec app reports no opstate.
+        app_shutdown=(lambda port: shutdown_app(port, role)) if role == "unit" else None,
     )

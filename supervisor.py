@@ -30,9 +30,14 @@ maintenance flag are re-read on every resource poll, so a supervisor that starte
 cache leaves ``DEGRADED`` once the database is back. ``opmode`` and the process list are read
 once: changing what is launched is a restart (restart-to-apply).
 
-**Stopping leaves the programs running.** Without the service there is one way to stop, and
-it is the restart flavor: PWI4, ps3cli and the app stay up and are adopted on the next start.
-Stopping them in order belongs to the service (stage 5).
+**Two ways to stop** (:class:`StopFlavor`). *Leave running*, the default and the only one
+without the service: PWI4, ps3cli and the app stay up and are adopted on the next start.
+*Tear down*, for the service stopping: the app, then PHD2, PWI4 and ps3cli, each stopped and
+waited for before the next (:meth:`Supervisor.teardown`). PHD2 is observed, not supervised, and
+is still stopped here: left running, nothing would watch it. A started-up app is sent its
+``shutdown`` first, since terminating it skips its own and would leave the covers open; an app
+not started up is not, since ``shutdown`` on a never-started unit first connects its
+components. Only a requested stop tears down: a loop that dies leaves everything running.
 
 The resource wait runs before the configuration can be read, so its budget, interval and index
 set are ``ResourcesConfig``'s defaults, passed in by the caller.
@@ -43,9 +48,11 @@ Design: mast-claude-config ``plans/supervisor-design.md`` §5-§8.
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -54,12 +61,13 @@ from supervision.clock import Clock
 from supervision.heartbeat import render_heartbeat
 from supervision.launcher import LaunchError, LaunchSettings, LaunchSpec, app_entry, build_launch
 from supervision.managed import Backoff, ManagedProcess, ProcessApi, RestartPolicy, Submit
-from supervision.probes import HealthResult
+from supervision.probes import HealthResult, ShutdownOutcome
 from supervision.programs import ResolvedProgram
 from supervision.ramdisk import RamdiskReviver
 from supervision.resources import Probe, Resource, ResourceTracker, WaitOutcome
 from supervision.state import (
     OpMode,
+    OpState,
     Phase,
     ProcessState,
     ProcessStatus,
@@ -79,6 +87,15 @@ CONFIG_RETRY_CAP_SECONDS = 60.0
 APP = "app"
 NOT_STARTED_BY_US = "not running (the operator starts it from VSCode)"
 STEADY_PHASES = frozenset({Phase.RUNNING, Phase.DEGRADED})
+# The app first, so it lets go of PWI4 and PHD2 before they go; ps3cli last, as nothing holds it.
+TEARDOWN_ORDER = (APP, "phd2", "pwi4", "ps3cli")
+TEARDOWN_REASON = "the supervisor is stopping"
+TEARDOWN_TICK_SECONDS = 1.0
+
+
+class StopFlavor(StrEnum):
+    LEAVE_RUNNING = "leave_running"  # the programs stay up and are adopted on the next start
+    TEAR_DOWN = "tear_down"  # the programs are stopped, in TEARDOWN_ORDER
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,12 +139,19 @@ class Wiring:
     heartbeat_seconds: float  # until the configuration says otherwise
     submit: Submit | None = None  # how probes run; None: each row's own executor
     ramdisk: RamdiskReviver | None = None  # None: the RAM disk is reported, never revived
+    app_shutdown: Callable[[int], ShutdownOutcome] | None = None  # the app's port -> its shutdown; None: never sent
+    sleep: Callable[[float], None] = time.sleep  # between the teardown's ticks
 
 
 class Row(Protocol):
     name: str
 
     def tick(self) -> ProcessStatus: ...
+
+    def stop(self, reason: str) -> None: ...
+
+    @property
+    def stopped(self) -> bool: ...
 
 
 @dataclass(slots=True)
@@ -139,6 +163,13 @@ class FixedRow:
 
     def tick(self) -> ProcessStatus:
         return self.status
+
+    def stop(self, reason: str) -> None:
+        """Nothing to stop: the program was never started, or is deliberately not watched."""
+
+    @property
+    def stopped(self) -> bool:
+        return True
 
     @classmethod
     def problem(cls, name: str, mode: SupervisionMode, detail: str, since: datetime) -> FixedRow:
@@ -168,9 +199,16 @@ class WatchedApp:
     inner: ManagedProcess
     name: str = APP
 
+    def stop(self, reason: str) -> None:
+        self.inner.stop(reason)
+
+    @property
+    def stopped(self) -> bool:
+        return self.inner.stopped
+
     def tick(self) -> ProcessStatus:
         status = self.inner.tick()
-        if status.pid is not None or status.state is ProcessState.BLOCKED:
+        if status.pid is not None or status.state in {ProcessState.BLOCKED, ProcessState.STOPPED}:
             return status
         return ProcessStatus(
             name=status.name,
@@ -213,23 +251,65 @@ class Supervisor:
     def wall_clock(self) -> datetime:
         return self._clock.wall()
 
-    def run(self, stop: threading.Event) -> None:
-        """Tick until ``stop`` is set. The programs are left running."""
+    def run(self, stop: threading.Event, flavor: StopFlavor = StopFlavor.LEAVE_RUNNING) -> None:
+        """Tick until ``stop`` is set, then stop the way ``flavor`` says. A loop that dies leaves the programs running."""
         logger.info(f"supervisor starting: role={self._role} host={self._hostname} top={self._top}")
+        ending = StopFlavor.LEAVE_RUNNING
         try:
             while True:
                 self.tick()
                 if stop.wait(TICK_SECONDS):
+                    ending = flavor
                     break
         finally:
-            self._stopping()
+            self._stopping(ending)
 
-    def _stopping(self) -> None:
-        """Publish ``STOPPING`` so a supervisor starting meanwhile waits rather than aborts."""
-        logger.info("supervisor stopping; the programs it owns are left running and are adopted on the next start")
+    def _stopping(self, flavor: StopFlavor) -> None:
+        """Publish ``STOPPING`` first, so a supervisor starting meanwhile waits rather than aborts."""
         now = self._clock.monotonic()
         self._enter(Phase.STOPPING, now)
         self._publish(now)
+        match flavor:
+            case StopFlavor.LEAVE_RUNNING:
+                logger.info("supervisor stopping; the programs it owns are left running and are adopted on the next start")
+            case StopFlavor.TEAR_DOWN:
+                logger.info(f"supervisor stopping; tearing down in order: {', '.join(TEARDOWN_ORDER)}")
+                self.teardown()
+                logger.info("supervisor stopped; teardown done")
+
+    def teardown(self) -> None:
+        """Stop the programs in ``TEARDOWN_ORDER``, each waited for before the next.
+
+        Every wait is bounded: a row's stop ends ``stopped``, or ``blocked`` once its program
+        has refused terminate or survived kill, and then the next program is stopped.
+        """
+        rows = {row.name: row for row in self._rows}
+        for name in TEARDOWN_ORDER:
+            row = rows.get(name)
+            if row is None:
+                continue
+            if name == APP:
+                self._shut_down_app(row.tick())
+            row.stop(TEARDOWN_REASON)
+            while True:
+                self._tick_rows()
+                self._publish(self._clock.monotonic())
+                if row.stopped:
+                    break
+                self._wiring.sleep(TEARDOWN_TICK_SECONDS)
+
+    def _shut_down_app(self, status: ProcessStatus) -> None:
+        """Send a started-up app its ``shutdown`` and wait for it; never one that is not started up."""
+        shutdown = self._wiring.app_shutdown
+        if shutdown is None or status.opstate is not OpState.STARTED_UP:
+            return
+        port = self._require_loaded().app_port
+        logger.info(f"app is {status.opstate}: sending it shutdown before stopping it")
+        outcome = shutdown(port)
+        if outcome.completed:
+            logger.info(f"app shut down: {outcome.detail}")
+        else:
+            logger.warning(f"app shutdown not confirmed ({outcome.detail}); stopping it anyway")
 
     def tick(self) -> None:
         now = self._clock.monotonic()
