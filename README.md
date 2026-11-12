@@ -55,6 +55,20 @@ MAST_supervision is cloned by MAST_provisioning's `mast-clone` as a sibling of t
 
 The folder must be named `supervision`, as `common` must be named `common`.
 
+## Installing the service
+
+`install/install-mast-service.ps1` registers `mast-service` with NSSM: `LocalSystem`, automatic start, `<top>\.venv\Scripts\python.exe -m supervision.service` from `<top>`, NSSM's capture of its output in `C:\MAST\logs\mast-service\` (rotated at 10 MiB), and a stop that sends Ctrl+C, waits out `service.py`'s stop grace plus a margin (420 s) and then ends `service.py` alone, so the supervisor dies with its job and the supervised programs survive. It is idempotent and does not start the service.
+
+On a unit, MAST_provisioning's `mast-service` provider runs it when the unit's registry entry is `supervised: true`, and its finalize starts the service. By hand, elevated:
+
+```powershell
+C:\MAST\src\supervision\install\install-mast-service.ps1             # register or converge
+sc.exe start mast-service
+C:\MAST\src\supervision\install\install-mast-service.ps1 -Uninstall  # stop, then nssm remove
+```
+
+It needs NSSM at `C:\Program Files\nssm\nssm.exe`, which MAST_provisioning's `nssm` provider installs. Every value it sets is a named constant at the top of the script, pinned by `tests/test_install_mast_service.py` against the provider's verify and against the supervisor's own stop timings. CI lints it with PSScriptAnalyzer 1.25.0 (`PSScriptAnalyzerSettings.psd1`).
+
 ## Dependencies
 
 Declared in `pyproject.toml` (not `requirements.txt`). On the fleet, `mast-clone` resolves this file together with the other cloned repos' manifests in one `uv pip install`, so:
