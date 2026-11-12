@@ -36,6 +36,7 @@ CONSOLE_DESKTOP = "winsta0\\default"
 NO_CONSOLE_SESSION = 0xFFFFFFFF
 SERVICE_SESSION = 0
 ERROR_NO_TOKEN = 1008
+ERROR_ALREADY_EXISTS = 183
 
 CREATE_SUSPENDED = 0x00000004
 CREATE_UNICODE_ENVIRONMENT = 0x00000400
@@ -259,7 +260,22 @@ class PyWin32SessionApi:
 
         win32event.SetEvent(event)
 
-    def wait(self, event: Handle, timeout_ms: int) -> bool:
+    def wait(self, handle: Handle, timeout_ms: int) -> bool:
         import win32event
 
-        return win32event.WaitForSingleObject(event, timeout_ms) == WAIT_OBJECT_0
+        return win32event.WaitForSingleObject(handle, timeout_ms) == WAIT_OBJECT_0
+
+    def create_mutex(self, name: str) -> Handle | None:
+        import win32api
+        import win32event
+        import win32security
+
+        # Empty attributes: default security, not inherited, as in create_process.
+        mutex = win32event.CreateMutex(win32security.SECURITY_ATTRIBUTES(), True, name)
+        if win32api.GetLastError() == ERROR_ALREADY_EXISTS:
+            mutex.Close()
+            return None
+        return mutex
+
+    def close(self, handle: Handle) -> None:
+        handle.Close()
