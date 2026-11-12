@@ -7,8 +7,9 @@ whole-reference assignment; readers never see live state, so a snapshot is froze
 It is a Pydantic model so FastAPI serializes it with no second schema, and it imports
 neither ``tkinter`` nor ``fastapi``, so it is tested on Linux CI.
 
-:class:`SupervisionMode`, :class:`OpMode` and :class:`OpState` are copies of MAST_common's
-``common.config.supervisor.SupervisionMode``, ``common.opmode.OpMode`` and ``common.opmode.OpState``: importing
+:class:`SupervisionMode`, :class:`OpMode`, :class:`OpState` and :data:`LAUNCH_OPMODE_ENV` are copies of
+MAST_common's ``common.config.supervisor.SupervisionMode``, ``common.opmode.OpMode``,
+``common.opmode.OpState`` and ``common.opmode.LAUNCH_OPMODE_ENV``: importing
 ``common.config`` builds a ``Filer`` and imports pymongo, which no consumer of this model
 should pay for. ``tests/test_supervisor_state.py`` pins the copies to the originals;
 consolidating them is MAST_supervision#2.
@@ -39,6 +40,9 @@ class SupervisionMode(StrEnum):
     SUPERVISED = "supervised"
     OBSERVED = "observed"
     DISABLED = "disabled"
+
+
+LAUNCH_OPMODE_ENV = "MAST_LAUNCH_OPMODE"
 
 
 class OpMode(StrEnum):
