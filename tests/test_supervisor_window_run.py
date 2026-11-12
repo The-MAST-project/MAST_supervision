@@ -12,6 +12,7 @@ import pytest
 import supervision
 from supervision.__main__ import open_gui, run_with_window
 from supervision.logsink import DequeHandler
+from supervision.state import Launch
 from supervision.supervisor import Supervisor
 
 WAIT = 5.0
@@ -101,7 +102,7 @@ def test_a_python_without_tk_runs_headless(monkeypatch: pytest.MonkeyPatch, capl
     monkeypatch.setitem(sys.modules, "supervision.gui", None)  # import raises ImportError
 
     with caplog.at_level(logging.WARNING):
-        window = open_gui(cast(Supervisor, None), Path("/top"))
+        window = open_gui(cast(Supervisor, None), Path("/top"), Launch.CONSOLE)
 
     assert window is None
     assert "running headless" in caplog.text
@@ -120,7 +121,7 @@ def test_a_window_that_cannot_open_leaves_no_log_handler_behind(monkeypatch: pyt
     monkeypatch.setattr(supervision, "gui", fake_gui, raising=False)
     supervisor = SimpleNamespace(snapshot=None, wall_clock=lambda: None)
 
-    window = open_gui(cast(Supervisor, supervisor), Path("/top"))
+    window = open_gui(cast(Supervisor, supervisor), Path("/top"), Launch.CONSOLE)
 
     assert window is None and opened
     assert _deque_handlers() == []

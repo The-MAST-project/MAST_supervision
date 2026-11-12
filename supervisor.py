@@ -76,6 +76,7 @@ from supervision.ramdisk import RamdiskReviver
 from supervision.resources import Probe, Resource, ResourceTracker, WaitOutcome
 from supervision.state import (
     ControlAnswer,
+    Launch,
     OpMode,
     OpState,
     Phase,
@@ -108,6 +109,15 @@ HOLD_REASON = "held: stop requested by {by}"
 class StopFlavor(StrEnum):
     LEAVE_RUNNING = "leave_running"  # the programs stay up and are adopted on the next start
     TEAR_DOWN = "tear_down"  # the programs are stopped, in TEARDOWN_ORDER
+
+
+def stop_flavor(launch: Launch) -> StopFlavor:
+    """``mast-service`` stopping means the machine is being taken down; a developer's Ctrl-C does not."""
+    match launch:
+        case Launch.SERVICE:
+            return StopFlavor.TEAR_DOWN
+        case Launch.CONSOLE:
+            return StopFlavor.LEAVE_RUNNING
 
 
 @dataclass(frozen=True, slots=True)

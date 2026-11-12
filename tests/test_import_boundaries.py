@@ -26,7 +26,7 @@ SESSION_ZERO_IMPORTS = {
         "supervision.backoff",
         "supervision.session",
     },
-    "session.py": {"__future__", "dataclasses", "logging", "typing", "supervision.backoff"},
+    "session.py": {"__future__", "dataclasses", "logging", "threading", "typing", "supervision.backoff"},
     "backoff.py": {"__future__"},
 }
 
