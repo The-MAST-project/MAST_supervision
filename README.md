@@ -57,7 +57,7 @@ The folder must be named `supervision`, as `common` must be named `common`.
 
 ## Installing the service
 
-`install/install-mast-service.ps1` registers `mast-service` with NSSM: `LocalSystem`, automatic start, `<top>\.venv\Scripts\python.exe -m supervision.service` from `<top>`, NSSM's capture of its output in `C:\MAST\logs\mast-service\` (rotated at 10 MiB), and a stop that sends Ctrl+C, waits out the supervisor's teardown (410 s) and then ends `service.py` alone, so the supervisor dies with its job and the supervised programs survive. It is idempotent and does not start the service.
+`install/install-mast-service.ps1` registers `mast-service` with NSSM: `LocalSystem`, automatic start, `<top>\.venv\Scripts\python.exe -m supervision.service` from `<top>`, NSSM's capture of its output in `C:\MAST\logs\mast-service\` (rotated at 10 MiB), and a stop that sends Ctrl+C, waits out `service.py`'s stop grace plus a margin (420 s) and then ends `service.py` alone, so the supervisor dies with its job and the supervised programs survive. It is idempotent and does not start the service.
 
 On a unit, MAST_provisioning's `mast-service` provider runs it when the unit's registry entry is `supervised: true`, and its finalize starts the service. By hand, elevated:
 

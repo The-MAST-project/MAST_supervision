@@ -51,17 +51,14 @@ ${FAILURE_RESTARTS}         = 3
 # spawned outside that job, survive (design section 4). WM_CLOSE and WM_QUIT are skipped,
 # since service.py has no window and no message loop.
 #
-# The timeout is the supervisor's whole teardown: a probe already in flight, the app's
-# shutdown wait, and a terminate-then-kill grace pair for each torn-down program
-# (probes.py, supervisor.py, managed.py; tests/test_install_mast_service.py keeps them equal).
-${PROBE_IN_FLIGHT_SECONDS}    = 70
-${APP_SHUTDOWN_WAIT_SECONDS}  = 200
-${PROGRAM_STOP_GRACE_SECONDS} = 10
-${GRACES_PER_PROGRAM}         = 2
-${TORN_DOWN_PROGRAMS}         = 4
-${STOP_MARGIN_SECONDS}        = 60
-${TEARDOWN_BUDGET_SECONDS}    = ${PROBE_IN_FLIGHT_SECONDS} + ${APP_SHUTDOWN_WAIT_SECONDS} + ${GRACES_PER_PROGRAM} * ${PROGRAM_STOP_GRACE_SECONDS} * ${TORN_DOWN_PROGRAMS} + ${STOP_MARGIN_SECONDS}
-${STOP_CONSOLE_TIMEOUT_MS}    = ${TEARDOWN_BUDGET_SECONDS} * ${MS_PER_SECOND}
+# The timeout is service.py's stop grace (its SUPERVISOR_STOP_GRACE_SECONDS: the supervisor's
+# whole teardown, derived there) plus a margin for service.py to close the job and exit.
+# tests/test_install_mast_service.py keeps the grace equal to service.py's. The console must
+# stay: NSSM's Ctrl+C needs one to arrive on.
+${SUPERVISOR_STOP_GRACE_SECONDS} = 380
+${STOP_MARGIN_SECONDS}           = 40
+${STOP_CONSOLE_TIMEOUT_MS}       = (${SUPERVISOR_STOP_GRACE_SECONDS} + ${STOP_MARGIN_SECONDS}) * ${MS_PER_SECOND}
+${NO_CONSOLE}                    = 0
 ${STOP_METHOD_SKIP}           = 6
 ${KILL_PROCESS_TREE}          = 0
 
@@ -150,6 +147,7 @@ ${parameters} = [ordered]@{
     'AppStopMethodSkip'    = ${STOP_METHOD_SKIP}
     'AppStopMethodConsole' = ${STOP_CONSOLE_TIMEOUT_MS}
     'AppKillProcessTree'   = ${KILL_PROCESS_TREE}
+    'AppNoConsole'         = ${NO_CONSOLE}
 }
 foreach (${name} in ${parameters}.Keys) {
     Invoke-Tool -Path ${NSSM_EXE} -Arguments @('set', ${SERVICE_NAME}, ${name}, [string]${parameters}[${name}])

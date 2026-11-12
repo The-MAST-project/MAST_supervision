@@ -13,9 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from supervision.managed import RestartPolicy
-from supervision.probes import APP_SHUTDOWN_WAIT_SECONDS, APP_STATUS_TIMEOUT_SECONDS
-from supervision.supervisor import TEARDOWN_ORDER
+from supervision.service import SUPERVISOR_STOP_GRACE_SECONDS
 
 INSTALLER = Path(__file__).resolve().parents[1] / "install" / "install-mast-service.ps1"
 
@@ -41,6 +39,7 @@ NSSM_PARAMETERS = (
     "AppStopMethodSkip",
     "AppStopMethodConsole",
     "AppKillProcessTree",
+    "AppNoConsole",
 )
 WM_CLOSE_AND_THREADS_SKIPPED = 2 | 4
 MS_PER_SECOND = 1000
@@ -127,28 +126,25 @@ def test_a_stop_does_not_kill_the_process_tree(source: str) -> None:
     assert _number(source, "KILL_PROCESS_TREE") == 0
 
 
-def test_the_stop_budget_matches_the_supervisor_constants(source: str) -> None:
-    assert _number(source, "PROBE_IN_FLIGHT_SECONDS") == APP_STATUS_TIMEOUT_SECONDS
-    assert _number(source, "APP_SHUTDOWN_WAIT_SECONDS") == APP_SHUTDOWN_WAIT_SECONDS
-    assert _number(source, "PROGRAM_STOP_GRACE_SECONDS") == RestartPolicy().stop_grace_seconds
-    assert _number(source, "TORN_DOWN_PROGRAMS") == len(TEARDOWN_ORDER)
+def test_the_stop_grace_is_service_pys(source: str) -> None:
+    """service.py waits this long after signaling the stop before closing the job."""
+    assert _number(source, "SUPERVISOR_STOP_GRACE_SECONDS") == SUPERVISOR_STOP_GRACE_SECONDS
 
 
-def test_the_console_timeout_is_the_whole_budget(source: str) -> None:
+def test_the_console_timeout_is_the_grace_plus_a_margin(source: str) -> None:
     code = _code(source)
-    assert re.search(r"\$\{STOP_CONSOLE_TIMEOUT_MS\}\s*=\s*\$\{TEARDOWN_BUDGET_SECONDS\}\s*\*", code)
-    budget = re.search(r"^\$\{TEARDOWN_BUDGET_SECONDS\}\s*=\s*(.+)$", code, re.MULTILINE)
-    assert budget
-    for part in (
-        "PROBE_IN_FLIGHT_SECONDS",
-        "APP_SHUTDOWN_WAIT_SECONDS",
-        "PROGRAM_STOP_GRACE_SECONDS",
-        "TORN_DOWN_PROGRAMS",
-        "STOP_MARGIN_SECONDS",
-    ):
-        assert part in budget.group(1)
+    assert re.search(
+        r"\$\{STOP_CONSOLE_TIMEOUT_MS\}\s*=\s*\(\$\{SUPERVISOR_STOP_GRACE_SECONDS\}\s*\+\s*"
+        r"\$\{STOP_MARGIN_SECONDS\}\)\s*\*\s*\$\{MS_PER_SECOND\}",
+        code,
+    )
     assert _number(source, "STOP_MARGIN_SECONDS") > 0
     assert _number(source, "MS_PER_SECOND") == MS_PER_SECOND
+
+
+def test_the_service_keeps_a_console(source: str) -> None:
+    """NSSM's stop is a Ctrl+C, which needs a console to arrive on."""
+    assert _number(source, "NO_CONSOLE") == 0
 
 
 def test_uninstall_stops_then_removes(source: str) -> None:

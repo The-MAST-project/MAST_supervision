@@ -35,11 +35,7 @@ This is piece S5 of the vault's *MAST supervisor service plan* (K5, K6, R2, R10 
   three times, reset after a day) for `nssm.exe` itself dying, which NSSM cannot handle.
 - **Stop:** NSSM sends Ctrl+C, waits `AppStopMethodConsole`, then terminates `service.py`.
   `AppStopMethodSkip 6` skips `WM_CLOSE` and `WM_QUIT`, since `service.py` has no window and no
-  message loop. `AppStopMethodConsole` is the supervisor's whole teardown, a probe in flight
-  (70 s, `APP_STATUS_TIMEOUT_SECONDS`), the app's shutdown wait (200 s,
-  `APP_SHUTDOWN_WAIT_SECONDS`), two stop graces for each of the four torn-down programs
-  (2 x 10 s x 4, `RestartPolicy.stop_grace_seconds`, `TEARDOWN_ORDER`), plus 60 s: 410 s. A test
-  keeps the components equal to the Python constants. `AppKillProcessTree 0`: NSSM kills only
+  message loop. `AppStopMethodConsole` is `service.py`'s stop grace, `SUPERVISOR_STOP_GRACE_SECONDS` (380 s: the supervisor's whole teardown, derived in `service.py`), plus 40 s for `service.py` to close the job and exit: 420 s. A test keeps the grace equal to `service.py`'s. `AppNoConsole 0` keeps the console NSSM's Ctrl+C arrives on. `AppKillProcessTree 0`: NSSM kills only
   `service.py`. The supervisor then dies with the job `service.py` holds (kill on close), and
   the supervised programs, spawned with `CREATE_BREAKAWAY_FROM_JOB`, survive, which is design §4's
   backstop. NSSM's default tree kill would have killed them as the supervisor's descendants.
@@ -62,11 +58,11 @@ This is piece S5 of the vault's *MAST supervisor service plan* (K5, K6, R2, R10 
 
 - `service.py` (S4) was being written in parallel and decides how it reacts to Ctrl+C, and its
   own grace between signaling `Global\mast-supervisor-stop` and closing the job. That grace must
-  fit inside `AppStopMethodConsole`. If S4 needs a different budget, the constants move here.
+  fit inside `AppStopMethodConsole`; the installer keeps a copy of that grace, pinned to `service.py` by a test, so it does.
 - The provisioning run stops the service with `Stop-Service` in standdown; whether the SCM
-  waits the full 410 s for a service in `STOP_PENDING` was not checked on the fleet. NSSM keeps
+  waits the full 420 s for a service in `STOP_PENDING` was not checked on the fleet. NSSM keeps
   reporting progress while it waits, which is understood to keep the SCM waiting.
-- At Windows shutdown the SCM gives services only `WaitToKillServiceTimeout`, far below 410 s,
+- At Windows shutdown the SCM gives services only `WaitToKillServiceTimeout`, far below 420 s,
   so the teardown is cut short there (the plan's R5).
 - PSScriptAnalyzer and the script itself never ran on a Mac (no `pwsh`); they run first in CI
   and on the labcomp2 dev VM.
