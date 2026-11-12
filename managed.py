@@ -56,6 +56,7 @@ from typing import Protocol
 import psutil
 
 from common.mast_logging import get_logger
+from supervision.backoff import Backoff
 from supervision.clock import Clock
 from supervision.probes import HealthResult
 from supervision.state import OpState, ProcessState, ProcessStatus, SupervisionMode
@@ -106,23 +107,6 @@ class RestartPolicy:
     crash_loop_restarts: int = 5
     crash_loop_window_seconds: float = 600.0
     stop_grace_seconds: float = 10.0
-
-
-class Backoff:
-    """Doubling waits up to a cap. A copy of MAST_common's ``config._watcher._Backoff`` (MAST_supervision#2)."""
-
-    def __init__(self, first: float, cap: float) -> None:
-        self._first = first
-        self._cap = cap
-        self._next = first
-
-    def reset(self) -> None:
-        self._next = self._first
-
-    def next(self) -> float:
-        value = self._next
-        self._next = min(self._next * 2, self._cap)
-        return value
 
 
 Submit = Callable[[Callable[[], HealthResult]], "Future[HealthResult]"]

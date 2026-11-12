@@ -11,11 +11,11 @@ import psutil
 import pytest
 
 import supervision.managed as managed_module
+from supervision.backoff import Backoff
 from supervision.clock import Clock
 from supervision.managed import (
     SPAWN_FLAGS,
     STARTUP_GRACE_SECONDS,
-    Backoff,
     FoundProcess,
     ManagedProcess,
     OsProcessApi,
