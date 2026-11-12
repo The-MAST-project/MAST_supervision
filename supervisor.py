@@ -57,10 +57,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from common.mast_logging import get_logger
+from supervision.backoff import Backoff
 from supervision.clock import Clock
 from supervision.heartbeat import render_heartbeat
 from supervision.launcher import LaunchError, LaunchSettings, LaunchSpec, app_entry, build_launch
-from supervision.managed import Backoff, ManagedProcess, ProcessApi, RestartPolicy, Submit
+from supervision.managed import ManagedProcess, ProcessApi, RestartPolicy, Submit
 from supervision.probes import HealthResult, ShutdownOutcome
 from supervision.programs import ResolvedProgram
 from supervision.ramdisk import RamdiskReviver
