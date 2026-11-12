@@ -39,6 +39,13 @@ is still stopped here: left running, nothing would watch it. A started-up app is
 not started up is not, since ``shutdown`` on a never-started unit first connects its
 components. Only a requested stop tears down: a loop that dies leaves everything running.
 
+**A program can be held down** (:meth:`Supervisor.request_program`, served on the loopback
+listener). A stop request stops a supervised program and the loop does not respawn it; a start
+request releases it. An observed or not-supervised program is not the supervisor's to stop and
+is refused, so PHD2 cannot be held while the app spawns it. A request is checked against the
+published snapshot and queued; the loop applies it at its next tick, so no request thread ever
+touches a row. A hold is not remembered: a supervisor that restarts starts every program again.
+
 The resource wait runs before the configuration can be read, so its budget, interval and index
 set are ``ResourcesConfig``'s defaults, passed in by the caller.
 
@@ -47,6 +54,7 @@ Design: mast-claude-config ``plans/supervisor-design.md`` §5-§8.
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -66,11 +74,13 @@ from supervision.programs import ResolvedProgram
 from supervision.ramdisk import RamdiskReviver
 from supervision.resources import Probe, Resource, ResourceTracker, WaitOutcome
 from supervision.state import (
+    ControlAnswer,
     OpMode,
     OpState,
     Phase,
     ProcessState,
     ProcessStatus,
+    ProgramAction,
     ResourceState,
     SupervisionMode,
     SupervisorSnapshot,
@@ -91,6 +101,7 @@ STEADY_PHASES = frozenset({Phase.RUNNING, Phase.DEGRADED})
 TEARDOWN_ORDER = (APP, "phd2", "pwi4", "ps3cli")
 TEARDOWN_REASON = "the supervisor is stopping"
 TEARDOWN_TICK_SECONDS = 1.0
+HOLD_REASON = "held: stop requested by {by}"
 
 
 class StopFlavor(StrEnum):
@@ -150,6 +161,8 @@ class Row(Protocol):
 
     def stop(self, reason: str) -> None: ...
 
+    def release(self) -> None: ...
+
     @property
     def stopped(self) -> bool: ...
 
@@ -166,6 +179,9 @@ class FixedRow:
 
     def stop(self, reason: str) -> None:
         """Nothing to stop: the program was never started, or is deliberately not watched."""
+
+    def release(self) -> None:
+        """Nothing was held."""
 
     @property
     def stopped(self) -> bool:
@@ -202,6 +218,9 @@ class WatchedApp:
     def stop(self, reason: str) -> None:
         self.inner.stop(reason)
 
+    def release(self) -> None:
+        self.inner.release()
+
     @property
     def stopped(self) -> bool:
         return self.inner.stopped
@@ -219,6 +238,13 @@ class WatchedApp:
             detail=NOT_STARTED_BY_US,
             since=status.since,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _Request:
+    name: str
+    action: ProgramAction
+    requested_by: str
 
 
 @dataclass(slots=True)
@@ -246,6 +272,8 @@ class Supervisor:
         self._statuses: tuple[ProcessStatus, ...] = ()
         self._phase = Phase.STARTING
         self._heartbeat_due = 0.0
+        self._requests: queue.SimpleQueue[_Request] = queue.SimpleQueue()
+        self._held: set[str] = set()
         self.snapshot = self._build_snapshot()
 
     def wall_clock(self) -> datetime:
@@ -311,8 +339,20 @@ class Supervisor:
         else:
             logger.warning(f"app shutdown not confirmed ({outcome.detail}); stopping it anyway")
 
+    def request_program(self, name: str, action: ProgramAction, requested_by: str) -> ControlAnswer:
+        """Queue a stop or start of ``name`` for the next tick. Safe from any thread: it reads only
+        the published snapshot."""
+        row = next((p for p in self.snapshot.processes if p.name == name), None)
+        if row is None:
+            return ControlAnswer.UNKNOWN
+        if row.mode is not SupervisionMode.SUPERVISED:
+            return ControlAnswer.NOT_SUPERVISED
+        self._requests.put(_Request(name, action, requested_by))
+        return ControlAnswer.ACCEPTED
+
     def tick(self) -> None:
         now = self._clock.monotonic()
+        self._apply_requests()
         match self._phase:
             case Phase.STARTING:
                 self._enter(Phase.WAITING_FOR_RESOURCES, now)
@@ -338,6 +378,26 @@ class Supervisor:
                 self._tick_rows()
                 self._enter(self._steady_phase(), now)
         self._publish(now)
+
+    def _apply_requests(self) -> None:
+        rows = {row.name: row for row in self._rows}
+        while True:
+            try:
+                request = self._requests.get_nowait()
+            except queue.Empty:
+                return
+            row = rows.get(request.name)
+            if row is None:
+                logger.warning(f"{request.name}: {request.action} requested by {request.requested_by}, but no such row")
+                continue
+            logger.info(f"{request.name}: {request.action} requested by {request.requested_by}")
+            match request.action:
+                case ProgramAction.STOP:
+                    row.stop(HOLD_REASON.format(by=request.requested_by))
+                    self._held.add(request.name)
+                case ProgramAction.START:
+                    row.release()
+                    self._held.discard(request.name)
 
     # --- phases ------------------------------------------------------------------------------
 
@@ -486,6 +546,7 @@ class Supervisor:
             resources=self._tracker.statuses,
             processes=self._statuses,
             ramdisk_revival=self._wiring.ramdisk.status() if self._wiring.ramdisk else None,
+            held=tuple(sorted(self._held)),
         )
 
     def _publish(self, now: float) -> None:

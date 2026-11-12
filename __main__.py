@@ -101,7 +101,7 @@ def run(role: str, top: Path, no_app: bool, gui: bool) -> int:
     except ClaimError as e:
         get_logger(__name__).error(f"mast-supervisor: not starting: {e}")
         return 1
-    servers = start_servers(status_sock, action_sock, lambda: supervisor.snapshot, wiring.ramdisk)
+    servers = start_servers(status_sock, action_sock, lambda: supervisor.snapshot, wiring.ramdisk, supervisor)
     stop = threading.Event()
     try:
         window = open_gui(supervisor, top) if gui else None
