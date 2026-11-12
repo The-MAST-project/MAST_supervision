@@ -135,6 +135,17 @@ _REVIVAL_SEVERITY = {
 }
 
 
+class ProgramAction(StrEnum):
+    STOP = "stop"  # stop the program and hold it down
+    START = "start"  # release the hold: the program is looked for, and started, again
+
+
+class ControlAnswer(StrEnum):
+    ACCEPTED = "accepted"  # queued for the loop's next tick
+    UNKNOWN = "unknown"  # no row of that name, or the configuration is not loaded yet
+    NOT_SUPERVISED = "not_supervised"  # observed or not supervised: not the supervisor's to stop
+
+
 class _Frozen(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -204,6 +215,7 @@ class SupervisorSnapshot(_Frozen):
     resources: tuple[ResourceStatus, ...] = ()
     processes: tuple[ProcessStatus, ...] = ()
     ramdisk_revival: RamdiskRevival | None = None  # None until the RAM disk is first lost
+    held: tuple[str, ...] = ()  # programs stopped on request and held down; forgotten on a restart
 
     def is_stale(self, now: datetime) -> bool:
         """True when the loop that published this has stopped publishing."""

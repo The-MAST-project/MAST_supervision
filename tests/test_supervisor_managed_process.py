@@ -751,6 +751,53 @@ def test_a_stop_twice_is_one_stop() -> None:
     assert api.terminated == [7]
 
 
+# --- a release: a stopped program is looked for, and started, again ------------------------
+
+
+def test_a_released_program_is_started_again() -> None:
+    api = FakeApi()
+    fake = FakeClock()
+    managed = _managed(api, fake, Probe())
+    managed.tick()
+    managed.stop(STOP)
+    _stopped(managed, fake)
+
+    managed.release()
+    status = managed.tick()
+
+    assert len(api.spawns) == 2
+    assert status.state is ProcessState.HEALTHY
+    assert not managed.stopped
+
+
+def test_a_release_during_the_stop_lets_the_program_come_back() -> None:
+    api = FakeApi({7: FakeProcess(session=OURS, dies_on_terminate=False)})
+    fake = FakeClock()
+    managed = _managed(api, fake, Probe())
+    managed.tick()
+    managed.stop(STOP)
+    managed.tick()
+
+    managed.release()
+    _stopped(managed, fake)
+
+    assert api.killed == [7]
+    assert len(api.spawns) == 1
+    assert not managed.stopped
+
+
+def test_a_release_of_a_running_program_does_nothing() -> None:
+    api = FakeApi({7: FakeProcess(session=OURS)})
+    fake = FakeClock()
+    managed = _managed(api, fake, Probe())
+    managed.tick()
+
+    managed.release()
+
+    assert managed.tick().pid == 7
+    assert api.terminated == []
+
+
 # --- the opstate a program reports ----------------------------------------------------------
 
 

@@ -30,6 +30,7 @@ running. GUI programs such as PWI4 ignore the flag.
 kill path as a restart, and then never respawns: the row ends ``stopped``, or ``blocked`` when
 the program refuses terminate or survives kill. It stops an observed program too; whether to
 ask is the caller's decision (the teardown asks for PHD2, ``supervisor.py``).
+:meth:`ManagedProcess.release` undoes it: the program is looked for, and started, again.
 
 **A spawn gets a startup grace.** Failed probes do not count toward the threshold until the
 program has probed healthy once or :data:`STARTUP_GRACE_SECONDS` has passed, so a slow cold
@@ -243,6 +244,20 @@ class ManagedProcess:
                 self._phase = _Stopped()
                 self._set(ProcessState.STOPPED, f"{reason}; was not running")
             case _Stopped():
+                pass
+
+    def release(self) -> None:
+        """Undo :meth:`stop`: look for the program again, and start it if supervised.
+
+        A program still being stopped is let finish dying, then restarted after the backoff.
+        """
+        match self._phase:
+            case _Stopping() as stopping:
+                stopping.final = False
+            case _Stopped():
+                self._phase = _Absent()
+                self._set(ProcessState.STARTING, "released")
+            case _Running() | _Absent():
                 pass
 
     def retry(self) -> None:

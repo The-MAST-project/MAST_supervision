@@ -16,7 +16,16 @@ from supervision.probes import HealthResult, ShutdownOutcome
 from supervision.programs import ResolvedProgram
 from supervision.ramdisk import RESTART_TASK, RamdiskReviver
 from supervision.resources import ProbeResult, Resource
-from supervision.state import OpMode, OpState, Phase, ProcessState, ResourceState, SupervisionMode
+from supervision.state import (
+    ControlAnswer,
+    OpMode,
+    OpState,
+    Phase,
+    ProcessState,
+    ProgramAction,
+    ResourceState,
+    SupervisionMode,
+)
 from supervision.supervisor import ConfigStatus, LoadedConfig, ResourceSettings, StopFlavor, Supervisor, Wiring
 
 T0 = datetime(2026, 10, 11, 18, 0, tzinfo=UTC)
@@ -647,3 +656,90 @@ def test_leave_running_is_the_default_flavor() -> None:
     supervisor.run(stop)
 
     assert world.api.events == []
+
+
+# --- holding a program over the loopback API ------------------------------------------------
+
+ASKER = "operator"
+
+
+def _spawned(world: World, image: str) -> int:
+    return sum(1 for argv, _, _ in world.api.spawns if Path(argv[0]).name == image)
+
+
+def test_a_held_program_is_stopped_and_not_respawned() -> None:
+    world, supervisor = _running_unit()
+
+    answer = supervisor.request_program("pwi4", ProgramAction.STOP, ASKER)
+    ticks(world, supervisor, 10, step=60.0)
+
+    assert answer is ControlAnswer.ACCEPTED
+    assert row(supervisor, "pwi4").state is ProcessState.STOPPED
+    assert _spawned(world, "PWI4.exe") == 1
+    assert supervisor.snapshot.held == ("pwi4",)
+
+
+def test_start_releases_a_held_program() -> None:
+    world, supervisor = _running_unit()
+    supervisor.request_program("ps3cli", ProgramAction.STOP, ASKER)
+    ticks(world, supervisor, 10, step=60.0)
+
+    answer = supervisor.request_program("ps3cli", ProgramAction.START, ASKER)
+    ticks(world, supervisor, 3, step=20.0)
+
+    assert answer is ControlAnswer.ACCEPTED
+    assert _spawned(world, "ps3cli.exe") == 2
+    assert row(supervisor, "ps3cli").state is not ProcessState.STOPPED
+    assert supervisor.snapshot.held == ()
+
+
+def test_the_production_app_can_be_held() -> None:
+    world, supervisor = _running_unit()
+
+    supervisor.request_program("app", ProgramAction.STOP, ASKER)
+    ticks(world, supervisor, 10, step=60.0)
+
+    assert row(supervisor, "app").state is ProcessState.STOPPED
+    assert len(world.api.spawned("app.py")) == 1
+
+
+@pytest.mark.parametrize("action", list(ProgramAction))
+def test_an_observed_program_cannot_be_held_or_released(action: ProgramAction) -> None:
+    world, supervisor = _running_unit()
+
+    assert supervisor.request_program("phd2", action, ASKER) is ControlAnswer.NOT_SUPERVISED
+    ticks(world, supervisor, 5, step=60.0)
+    assert row(supervisor, "phd2").state is not ProcessState.STOPPED
+
+
+def test_a_development_app_is_the_operators_and_cannot_be_held() -> None:
+    world = World(full_set=True)
+    supervisor = world.supervisor()
+    ticks(world, supervisor, 8, step=20.0)
+
+    assert supervisor.request_program("app", ProgramAction.STOP, ASKER) is ControlAnswer.NOT_SUPERVISED
+
+
+def test_an_unknown_program_is_unknown() -> None:
+    _, supervisor = _running_unit()
+
+    assert supervisor.request_program("notepad", ProgramAction.STOP, ASKER) is ControlAnswer.UNKNOWN
+
+
+def test_before_the_configuration_loads_every_program_is_unknown() -> None:
+    world = World(full_set=True, config_failures=99)
+    supervisor = world.supervisor()
+    ticks(world, supervisor, 3)
+
+    assert supervisor.request_program("pwi4", ProgramAction.STOP, ASKER) is ControlAnswer.UNKNOWN
+
+
+def test_a_request_acts_only_inside_a_tick() -> None:
+    world, supervisor = _running_unit()
+    events = list(world.api.events)
+
+    supervisor.request_program("pwi4", ProgramAction.STOP, ASKER)
+    assert world.api.events == events
+
+    supervisor.tick()
+    assert world.api.events == [*events, "terminate PWI4.exe"]
