@@ -23,7 +23,7 @@ On a unit, it also revives the RAM disk (`D:`) when it is gone, on its own probe
 | `clock.py` | the injected monotonic and wall clocks |
 | `probes.py` | the PWI4, PHD2, ps3cli and app health probes, each one bounded call against a local port with a timeout no stricter than the app's own client, imports no client of the programs it probes |
 | `managed.py` | `ManagedProcess`: adopts a copy in its own login session or spawns one, blocks without killing when a copy runs in another session, probes without overlap, restarts after the threshold with backoff and a startup grace, stops on a crash loop; `OsProcessApi` is the Windows side |
-| `launcher.py` | `build_launch()`, the pure role + `opmode` -> `LaunchSpec` function: VSCode once under `development`; the app under `production`, for unit only (spec's app does not read `opmode` yet), without proxy variables and with `MAST_OPMODE` only as inherited |
+| `launcher.py` | `build_launch()`, the pure role + `opmode` -> `LaunchSpec` function: VSCode once under `development`; the app under `production`, for unit only (spec's app does not read `opmode` yet), without proxy variables, with `MAST_OPMODE` only as inherited, and with `MAST_LAUNCH_OPMODE` set to the launch opmode, which the app reads only where its configuration cannot say |
 | `locate.py` | where VSCode, PWI4 and ps3cli (and its catalog) are installed, when the configuration names no `exe` |
 | `programs.py` | what each configured program name means on a MAST machine (image, location, default arguments, probe), resolved into the rows the loop supervises and the lines `--dry-run` prints |
 | `heartbeat.py` | `render_heartbeat()`: the whole snapshot as one ASCII log record, at its severity |

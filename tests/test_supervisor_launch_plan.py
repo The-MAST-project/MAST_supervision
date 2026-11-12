@@ -5,7 +5,7 @@ import pytest
 
 from supervision.__main__ import Plan, main, render_plan
 from supervision.launcher import LaunchError, LaunchSettings, build_launch
-from supervision.state import OpMode
+from supervision.state import LAUNCH_OPMODE_ENV, OpMode
 
 TOP = Path("/top")
 PYTHON = Path("/top/.venv/bin/python")
@@ -93,6 +93,24 @@ def test_an_inherited_mast_opmode_is_passed_through() -> None:
     env = build_launch("unit", OpMode.PRODUCTION, TOP, SETTINGS, ENV | {"MAST_OPMODE": "production"}).env
 
     assert env["MAST_OPMODE"] == "production"
+
+
+def test_the_app_gets_the_opmode_it_was_launched_under() -> None:
+    env = build_launch("unit", OpMode.PRODUCTION, TOP, SETTINGS, ENV).env
+
+    assert env[LAUNCH_OPMODE_ENV] == OpMode.PRODUCTION.value
+
+
+def test_the_launch_opmode_does_not_displace_an_inherited_mast_opmode() -> None:
+    env = build_launch("unit", OpMode.PRODUCTION, TOP, SETTINGS, ENV | {"MAST_OPMODE": "development"}).env
+
+    assert env["MAST_OPMODE"] == "development"
+    assert env[LAUNCH_OPMODE_ENV] == OpMode.PRODUCTION.value
+
+
+def test_vscode_gets_no_launch_opmode() -> None:
+    """An app the operator starts from VSCode was not launched by the supervisor."""
+    assert LAUNCH_OPMODE_ENV not in build_launch("unit", OpMode.DEVELOPMENT, TOP, SETTINGS, ENV).env
 
 
 def test_the_callers_environment_is_left_alone() -> None:

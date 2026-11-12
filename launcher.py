@@ -22,6 +22,10 @@ waiting. The unit acts on ``opmode`` since MAST_unit#297: under ``production`` i
 - ``PYTHONUNBUFFERED=1``, so the app's output reaches the supervisor's log as it is written.
 - ``MAST_OPMODE`` only as inherited. Injecting the resolved database value would make it an
   environment override, which outranks the database in ``common.opmode.resolve_opmode``.
+- ``MAST_LAUNCH_OPMODE`` set to the opmode the supervisor launched it under. The app reads it
+  only where its configuration cannot say (no unit, or unreadable), so a production unit
+  restarted then stays production rather than starting its hardware (MAST_common#228).
+  VSCode does not get it: an app the operator starts there was not launched by the supervisor.
 
 No ``PYTHONPATH``: ``mast.pth`` already puts ``<top>`` on the path.
 
@@ -35,7 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 
-from supervision.state import OpMode
+from supervision.state import LAUNCH_OPMODE_ENV, OpMode
 
 APP_ROLES = frozenset({"unit", "spec"})
 PRODUCTION_ROLES = frozenset({"unit"})  # the roles whose app waits for `startup` under `production`
@@ -79,7 +83,7 @@ def build_launch(role: str, opmode: OpMode, top: Path, conf: LaunchSettings, env
         case OpMode.DEVELOPMENT:
             return _vscode(role, top, conf, env)
         case OpMode.PRODUCTION:
-            return _app(role, top, conf, env)
+            return _app(role, opmode, top, conf, env)
 
 
 def app_entry(role: str, top: Path) -> Path:
@@ -100,7 +104,7 @@ def _vscode(role: str, top: Path, conf: LaunchSettings, env: Mapping[str, str]) 
     )
 
 
-def _app(role: str, top: Path, conf: LaunchSettings, env: Mapping[str, str]) -> LaunchSpec:
+def _app(role: str, opmode: OpMode, top: Path, conf: LaunchSettings, env: Mapping[str, str]) -> LaunchSpec:
     if role not in PRODUCTION_ROLES:
         raise LaunchError(
             f"opmode production is refused for {role}: its app does not read opmode yet and would start "
@@ -108,6 +112,7 @@ def _app(role: str, top: Path, conf: LaunchSettings, env: Mapping[str, str]) -> 
         )
     app = app_entry(role, top)
     app_env = {k: v for k, v in env.items() if k.lower() not in PROXY_VARIABLES} | UNBUFFERED
+    app_env[LAUNCH_OPMODE_ENV] = opmode.value
     return LaunchSpec(
         name="app",
         argv=(str(conf.python), str(app)),

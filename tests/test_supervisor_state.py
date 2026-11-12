@@ -61,6 +61,12 @@ def test_local_enum_copies_match_common(copy, original) -> None:
     assert {m.name: m.value for m in copy} == {m.name: m.value for m in original}
 
 
+def test_the_launch_opmode_variable_matches_common() -> None:
+    from supervision.state import LAUNCH_OPMODE_ENV
+
+    assert LAUNCH_OPMODE_ENV == common_opmode.LAUNCH_OPMODE_ENV
+
+
 def test_every_process_state_has_a_severity() -> None:
     for state in ProcessState:
         assert isinstance(state.severity, Severity)
