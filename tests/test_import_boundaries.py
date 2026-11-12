@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # session.py and backoff.py are what service.py (session 0) will import. The conftest
 # imports common.filer for every test, so this is read from the source, not sys.modules.
 SESSION_ZERO_IMPORTS = {
-    "session.py": {"__future__", "dataclasses", "logging", "typing", "supervision.backoff"},
+    "session.py": {"__future__", "dataclasses", "logging", "threading", "typing", "supervision.backoff"},
     "backoff.py": {"__future__"},
 }
 

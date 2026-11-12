@@ -35,7 +35,6 @@ from typing import cast
 
 from common.mast_logging import get_logger
 from supervision.gui_model import (
-    CLOSE_HINT,
     LEVELS,
     PROCESS_COLUMNS,
     RESOURCE_COLUMNS,
@@ -113,6 +112,7 @@ class WindowContext:
     top: Path
     log_file: Path | None
     readme: Path
+    close_hint: str
 
 
 def open_window(
@@ -315,7 +315,7 @@ class SupervisorWindow:
 
     def _minimize(self) -> None:
         self.root.iconify()
-        logger.info(CLOSE_HINT)
+        logger.info(self._context.close_hint)
 
     # --- menu --------------------------------------------------------------------------------
 

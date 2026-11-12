@@ -23,6 +23,7 @@ Design: mast-claude-config ``plans/supervisor-design.md`` §4.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -43,6 +44,8 @@ CREATE_UNICODE_ENVIRONMENT = 0x00000400
 # supervisor, which closing its window must never do.
 CREATE_NO_WINDOW = 0x08000000
 SPAWN_FLAGS = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW
+# What the supervisor adds to its own children under the service, so they outlive its job.
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
@@ -50,6 +53,8 @@ JOB_LIMITS = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK
 
 STOP_EVENT_NAME = "Global\\mast-supervisor-stop"
 STOP_EVENT_SDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00100000;;;IU)"
+# How long one wait on the stop event lasts before the watcher looks at the loop's own stop again.
+STOP_WATCH_POLL_MS = 1000
 
 NO_SESSION_RETRY_FIRST_SECONDS = 1.0
 NO_SESSION_RETRY_CAP_SECONDS = 60.0
@@ -112,6 +117,20 @@ class Win32SessionApi(Protocol):
     def create_event(self, name: str, sddl: str) -> Handle: ...
 
 
+class StopEventError(Exception):
+    """The stop event cannot be opened: something other than ``mast-service`` started a ``--service`` supervisor."""
+
+
+class StopEventApi(Protocol):
+    """The supervisor's side of the stop event: open it, and wait on it."""
+
+    def open_event(self, name: str) -> Handle:
+        """Raises :class:`StopEventError` when there is no such event."""
+        ...
+
+    def wait(self, event: Handle, timeout_ms: int) -> bool: ...
+
+
 class SessionBridge:
     """Spawns into the console session, inside ``job``."""
 
@@ -158,6 +177,19 @@ def create_job(api: Win32SessionApi) -> Handle:
 
 def create_stop_event(api: Win32SessionApi, name: str = STOP_EVENT_NAME) -> Handle:
     return api.create_event(name, STOP_EVENT_SDDL)
+
+
+def open_stop_event(api: StopEventApi, name: str = STOP_EVENT_NAME) -> Handle:
+    return api.open_event(name)
+
+
+def watch_stop_event(api: StopEventApi, event: Handle, stop: threading.Event) -> None:
+    """Set ``stop`` when ``mast-service`` signals the event; return once ``stop`` is set either way."""
+    while not stop.is_set():
+        if api.wait(event, STOP_WATCH_POLL_MS):
+            logger.info("supervisor: mast-service asked it to stop")
+            stop.set()
+            return
 
 
 class PyWin32SessionApi:
@@ -253,6 +285,19 @@ class PyWin32SessionApi:
             sddl, win32security.SDDL_REVISION_1
         )
         return win32event.CreateEvent(attributes, True, False, name)
+
+    def open_event(self, name: str) -> Handle:
+        import pywintypes
+        import win32con
+        import win32event
+
+        try:
+            return win32event.OpenEvent(win32con.SYNCHRONIZE, False, name)
+        except pywintypes.error as e:
+            raise StopEventError(
+                f"cannot open {name} ({e.strerror}): --service is for mast-service, which creates it; "
+                "run by hand with --no-service"
+            ) from e
 
     def signal(self, event: Handle) -> None:
         import win32event

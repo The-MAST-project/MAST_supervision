@@ -24,7 +24,10 @@ program, is counted.
 **A console child gets a console of its own, with no window** (``CREATE_NO_WINDOW``, as
 MAST_common's ``process.py`` starts them). Sharing the supervisor's console would hand it the
 supervisor's Ctrl-C and its window's close, and stopping the supervisor must leave the programs
-running. GUI programs such as PWI4 ignore the flag.
+running. GUI programs such as PWI4 ignore the flag. Under ``mast-service`` (:class:`Launch`
+``SERVICE``) children also break away from the supervisor's job, so the service closing the job
+leaves them running; a console launch never asks, since a terminal's job without
+``BREAKAWAY_OK`` makes ``CreateProcess`` fail on the flag.
 
 **A stop on request is final.** :meth:`ManagedProcess.stop` takes the same terminate, grace,
 kill path as a restart, and then never respawns: the row ends ``stopped``, or ``blocked`` when
@@ -60,7 +63,8 @@ from common.mast_logging import get_logger
 from supervision.backoff import Backoff
 from supervision.clock import Clock
 from supervision.probes import HealthResult
-from supervision.state import OpState, ProcessState, ProcessStatus, SupervisionMode
+from supervision.session import CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW
+from supervision.state import Launch, OpState, ProcessState, ProcessStatus, SupervisionMode
 
 logger = get_logger(__name__)
 
@@ -68,7 +72,6 @@ STARTUP_GRACE_SECONDS = 120.0
 # A tick follows phase changes it causes (found -> probed, stopped -> scheduled) rather than
 # leaving each for the next tick; the longest chain is absent -> running -> stopping -> absent.
 MAX_STEPS_PER_TICK = 4
-SPAWN_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -460,6 +463,17 @@ class ManagedProcess:
         self._detail = detail
 
 
+def spawn_flags(launch: Launch, platform: str = sys.platform) -> int:
+    """The ``creationflags`` a child is spawned with; none off Windows, where ``Popen`` refuses any."""
+    if platform != "win32":
+        return 0
+    match launch:
+        case Launch.SERVICE:
+            return CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB
+        case Launch.CONSOLE:
+            return CREATE_NO_WINDOW
+
+
 class OsProcessApi:
     """:class:`ProcessApi` over psutil and ``common.process``. Windows only: login sessions are.
 
@@ -467,7 +481,8 @@ class OsProcessApi:
     adopted processes as ``psutil.Process``, which checks the creation time against pid reuse.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, launch: Launch = Launch.CONSOLE, platform: str = sys.platform) -> None:
+        self._flags = spawn_flags(launch, platform)
         self._children: dict[int, subprocess.Popen[bytes]] = {}
         self._adopted: dict[int, psutil.Process] = {}
 
@@ -504,7 +519,7 @@ class OsProcessApi:
         return process_session_id(os.getpid())
 
     def spawn(self, argv: list[str], cwd: Path, env: Mapping[str, str] | None = None) -> int:
-        child = subprocess.Popen(argv, cwd=cwd, env=env, shell=False, creationflags=SPAWN_FLAGS)
+        child = subprocess.Popen(argv, cwd=cwd, env=env, shell=False, creationflags=self._flags)
         self._children[child.pid] = child
         return child.pid
 

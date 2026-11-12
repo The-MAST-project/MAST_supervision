@@ -21,7 +21,7 @@ from supervision.probes import probe_app, shutdown_app
 from supervision.programs import ResolvedProgram, resolve_programs
 from supervision.ramdisk import RamdiskReviver, probe_writable, run_command
 from supervision.resources import ProbeResult, Resource, probe_network, probe_ramdisk, probe_share
-from supervision.state import OpMode
+from supervision.state import Launch, OpMode
 from supervision.supervisor import ConfigStatus, LoadedConfig, ResourceSettings, Wiring
 
 
@@ -72,7 +72,7 @@ def load_config(role: str, watch: bool = False) -> LoadedConfig:
     )
 
 
-def real_wiring(role: str, env: Mapping[str, str], home: Path) -> Wiring:
+def real_wiring(role: str, env: Mapping[str, str], home: Path, launch: Launch = Launch.CONSOLE) -> Wiring:
     from common.config.local import load_local_config
     from common.config.supervisor import ResourcesConfig, SupervisorConfig
 
@@ -109,7 +109,7 @@ def real_wiring(role: str, env: Mapping[str, str], home: Path) -> Wiring:
 
     return Wiring(
         clock=clock,
-        api=OsProcessApi(),
+        api=OsProcessApi(launch),
         resource_probes=resource_probes,
         resources=ResourceSettings(defaults.wait_budget_seconds, defaults.probe_interval_seconds),
         load_config=lambda: load_config(role, watch=True),

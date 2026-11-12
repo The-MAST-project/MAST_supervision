@@ -2,10 +2,15 @@
 
 - ``--dry-run`` resolves the machine's role, ``opmode`` and configuration, locates the programs,
   prints what the supervisor would start, and exits non-zero when the launch cannot be built.
-- ``--no-service`` runs the supervisor in this console until Ctrl-C, logging to
-  ``mast-<role>-supervisor-log.txt``, with its window (:mod:`supervision.gui`) unless
-  ``--no-gui`` is given or no window can open. The service arrives in stage 5; until then
-  ``--no-service`` is required. ``--no-app`` launches nothing and watches the app.
+- ``--service`` is how ``mast-service`` starts the supervisor in the console session. It runs
+  until the service signals the stop event (:mod:`supervision.session`), then tears the programs
+  down, the app first; its children break away from the service's job.
+- ``--no-service`` runs the supervisor in this console until Ctrl-C, which leaves the programs
+  running, as a developer's stop must.
+- Either logs to ``mast-<role>-supervisor-log.txt`` and opens the window
+  (:mod:`supervision.gui`) unless ``--no-gui`` is given or no window can open. ``--no-app``
+  launches nothing and watches the app. Exactly one of ``--dry-run``, ``--service`` and
+  ``--no-service`` is given; ``--dry-run`` takes no other option.
   ``GET /status`` is served on ``SUPERVISOR_PORT`` throughout; a supervisor that cannot have the
   port does not start (see :mod:`supervision.instance`).
 - With the window, the Tk mainloop owns the main thread and the loop runs on a worker. Ctrl-C
@@ -36,12 +41,13 @@ from typing import TYPE_CHECKING, Protocol
 import common
 from supervision import gui_model
 from supervision.launcher import APP_ROLES, LaunchError, LaunchSpec, build_launch
-from supervision.state import OpMode
+from supervision.state import Launch, OpMode
 
 if TYPE_CHECKING:
     from supervision.supervisor import Supervisor
 
 REPORTED_ENV = ("MAST_OPMODE", "PYTHONUNBUFFERED")
+RUN_OPTIONS = {"--service": "service", "--no-service": "no_service", "--no-gui": "no_gui", "--no-app": "no_app"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,15 +61,34 @@ class Plan:
     target_missing: bool = False  # the workspace or app.py the launch opens does not exist
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+@dataclass(frozen=True, slots=True)
+class Args:
+    launch: Launch | None  # None: a dry run
+    no_gui: bool
+    no_app: bool
+
+
+def parse_args(argv: Sequence[str] | None) -> Args:
     parser = argparse.ArgumentParser(prog="mast-supervisor")
     parser.add_argument("--dry-run", action="store_true", help="print what would be started, and exit")
+    launch = parser.add_mutually_exclusive_group()
+    launch.add_argument("--service", action="store_true", help="as started by mast-service; stopped by its stop event")
+    launch.add_argument("--no-service", action="store_true", help="run in this console until Ctrl-C")
     parser.add_argument("--no-gui", action="store_true", help="no window: run headless")
-    parser.add_argument("--no-service", action="store_true", help="run in this console (required until stage 5)")
     parser.add_argument("--no-app", action="store_true", help="launch neither VSCode nor the app; watch the app")
     args = parser.parse_args(argv)
-    if not args.dry_run and not args.no_service:
-        parser.error("until the service exists, run with --no-service (or --dry-run)")
+    if args.dry_run:
+        given = [flag for flag, on in RUN_OPTIONS.items() if getattr(args, on)]
+        if given:
+            parser.error(f"--dry-run starts nothing and takes no {', '.join(given)}")
+        return Args(launch=None, no_gui=False, no_app=False)
+    if not args.service and not args.no_service:
+        parser.error("say how this supervisor runs: --service (mast-service), --no-service (a console) or --dry-run")
+    return Args(Launch.SERVICE if args.service else Launch.CONSOLE, args.no_gui, args.no_app)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
 
     from common.config.local import load_local_config
 
@@ -72,53 +97,69 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"mast-supervisor: refusing to run on a {role} machine", file=sys.stderr)
         return 1
     top = Path(common.__file__).resolve().parents[1]
-    if args.dry_run:
+    if args.launch is None:
         plan = resolve_plan(role, top, os.environ)
         print(render_plan(plan))
         return 0 if plan.launch and not plan.target_missing else 1
-    return run(role, top, no_app=args.no_app, gui=not args.no_gui)
+    return run(role, top, args.launch, no_app=args.no_app, gui=not args.no_gui)
 
 
 class Window(Protocol):
     def run(self, stop: threading.Event, alive: Callable[[], bool]) -> None: ...
 
 
-def run(role: str, top: Path, no_app: bool, gui: bool) -> int:
+def run(role: str, top: Path, launch: Launch, no_app: bool, gui: bool) -> int:
     """Both ports are claimed before the loop starts, so a second supervisor never reaches the programs
-    and none runs without its routes."""
+    and none runs without its routes. Under the service the stop event is opened first: a
+    ``--service`` supervisor nothing can stop does not start."""
     from common.mast_logging import LogProgram, configure_logging, get_logger
     from supervision.api import start_servers
     from supervision.instance import LISTENERS, ClaimError, PsutilPortOwners, claim_listeners
-    from supervision.supervisor import Supervisor
+    from supervision.supervisor import StopFlavor, Supervisor, stop_flavor
     from supervision.wiring import hostname, real_wiring
 
     configure_logging(program=LogProgram.SUPERVISOR)
+    logger = get_logger(__name__)
+    stop = threading.Event()
+    if launch is Launch.SERVICE:
+        from supervision.session import PyWin32SessionApi, StopEventError, open_stop_event, watch_stop_event
+
+        api = PyWin32SessionApi()
+        try:
+            event = open_stop_event(api)
+        except StopEventError as e:
+            logger.error(f"mast-supervisor: not starting: {e}")
+            return 1
+        threading.Thread(target=watch_stop_event, args=(api, event, stop), name="service-stop", daemon=True).start()
     env = dict(os.environ)
-    wiring = real_wiring(role, env, Path.home())
+    wiring = real_wiring(role, env, Path.home(), launch)
     supervisor = Supervisor(role, hostname(), top, env, wiring, no_app=no_app)
     try:
         status_sock, action_sock = claim_listeners(LISTENERS, PsutilPortOwners(), wiring.clock)
     except ClaimError as e:
-        get_logger(__name__).error(f"mast-supervisor: not starting: {e}")
+        logger.error(f"mast-supervisor: not starting: {e}")
         return 1
     servers = start_servers(status_sock, action_sock, lambda: supervisor.snapshot, wiring.ramdisk, supervisor)
-    stop = threading.Event()
+    flavor = stop_flavor(launch)
     try:
-        window = open_gui(supervisor, top) if gui else None
+        window = open_gui(supervisor, top, launch) if gui else None
         if window is None:
-            supervisor.run(stop)
+            supervisor.run(stop, flavor)
         else:
-            run_with_window(supervisor.run, window, stop)
+            run_with_window(lambda stopped: supervisor.run(stopped, flavor), window, stop)
     except KeyboardInterrupt:
         pass
     finally:
         for server in servers:
             server.stop()
-    print("mast-supervisor: stopped; the programs it owns are left running", file=sys.stderr)
+    if flavor is StopFlavor.TEAR_DOWN and stop.is_set():
+        print("mast-supervisor: stopped; the programs it owns were torn down", file=sys.stderr)
+    else:
+        print("mast-supervisor: stopped; the programs it owns are left running", file=sys.stderr)
     return 0
 
 
-def open_gui(supervisor: Supervisor, top: Path) -> Window | None:
+def open_gui(supervisor: Supervisor, top: Path, launch: Launch) -> Window | None:
     """The window, fed by a ``DequeHandler`` on the root logger; None to run headless."""
     from common.config.supervisor import GuiConfig
     from common.mast_logging import DailyFileHandler, get_logger
@@ -140,7 +181,9 @@ def open_gui(supervisor: Supervisor, top: Path) -> Window | None:
         conf.drain_interval_ms, conf.drain_max_records_per_tick, conf.log_pane_max_lines, conf.log_level
     )
     log_file = Path(daily.baseFilename) if daily is not None else None
-    context = gui.WindowContext(gui_model.package_version(), top, log_file, Path(__file__).with_name("README.md"))
+    context = gui.WindowContext(
+        gui_model.package_version(), top, log_file, Path(__file__).with_name("README.md"), gui_model.close_hint(launch)
+    )
     window = gui.open_window(lambda: supervisor.snapshot, handler.lines, settings, context, supervisor.wall_clock)
     if window is None:
         root.removeHandler(handler)

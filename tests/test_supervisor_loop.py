@@ -16,8 +16,10 @@ from supervision.probes import HealthResult, ShutdownOutcome
 from supervision.programs import ResolvedProgram
 from supervision.ramdisk import RESTART_TASK, RamdiskReviver
 from supervision.resources import ProbeResult, Resource
+from supervision.session import STOP_EVENT_NAME, watch_stop_event
 from supervision.state import (
     ControlAnswer,
+    Launch,
     OpMode,
     OpState,
     Phase,
@@ -26,7 +28,15 @@ from supervision.state import (
     ResourceState,
     SupervisionMode,
 )
-from supervision.supervisor import ConfigStatus, LoadedConfig, ResourceSettings, StopFlavor, Supervisor, Wiring
+from supervision.supervisor import (
+    ConfigStatus,
+    LoadedConfig,
+    ResourceSettings,
+    StopFlavor,
+    Supervisor,
+    Wiring,
+    stop_flavor,
+)
 
 T0 = datetime(2026, 10, 11, 18, 0, tzinfo=UTC)
 TOP = Path("/top")
@@ -579,6 +589,39 @@ def test_a_teardown_stops_the_app_then_phd2_pwi4_and_ps3cli() -> None:
     for name in ("app", "phd2", "pwi4", "ps3cli"):
         assert row(supervisor, name).state is ProcessState.STOPPED
     assert supervisor.snapshot.phase is Phase.STOPPING
+
+
+class SignaledEvent:
+    """``mast-service``'s stop event, already signaled."""
+
+    def open_event(self, name: str) -> object:
+        return name
+
+    def wait(self, event: object, timeout_ms: int) -> bool:
+        return True
+
+
+def test_the_services_stop_event_tears_the_programs_down() -> None:
+    world, supervisor = _running_unit()
+    stop = threading.Event()
+
+    watch_stop_event(SignaledEvent(), STOP_EVENT_NAME, stop)
+    assert stop.is_set(), "the loop would run until killed"
+    supervisor.run(stop, stop_flavor(Launch.SERVICE))
+
+    assert world.api.events == TORN_DOWN_IN_ORDER
+
+
+def test_a_console_stop_leaves_the_programs_running() -> None:
+    """Ctrl-C under ``--no-service`` sets the same stop the window watches; nothing is torn down."""
+    world, supervisor = _running_unit()
+    stop = threading.Event()
+    stop.set()
+
+    supervisor.run(stop, stop_flavor(Launch.CONSOLE))
+
+    assert world.api.stops == []
+    assert all(p.running for p in world.api.procs.values())
 
 
 def test_nothing_is_respawned_after_a_teardown() -> None:
