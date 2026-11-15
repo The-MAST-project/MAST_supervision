@@ -50,6 +50,13 @@ class OpMode(StrEnum):
     PRODUCTION = "production"
 
 
+class Launch(StrEnum):
+    """How the supervisor was started: by ``mast-service`` (``--service``) or by hand in a console (``--no-service``)."""
+
+    SERVICE = "service"
+    CONSOLE = "console"
+
+
 class OpState(StrEnum):
     """Where the app is in its lifecycle, as its ``status`` reports it."""
 

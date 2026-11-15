@@ -25,11 +25,24 @@ from typing import Protocol
 
 from supervision.heartbeat import format_uptime, or_unknown
 from supervision.logsink import LogLine
-from supervision.state import Severity, SupervisorSnapshot
+from supervision.state import Launch, Severity, SupervisorSnapshot
 
 LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 DEFAULT_LEVEL = "INFO"
-CLOSE_HINT = "the window was minimized, not closed: the supervisor keeps running; stop it with Ctrl-C in its console"
+CONSOLE_CLOSE_HINT = "the window was minimized, not closed: the supervisor keeps running; stop it with Ctrl-C in its console"
+SERVICE_CLOSE_HINT = (
+    "the window was minimized, not closed: the supervisor keeps running; "
+    "sc stop mast-service stops it, and the programs it supervises with it"
+)
+
+
+def close_hint(launch: Launch) -> str:
+    """What closing the window logs: how this supervisor is actually stopped."""
+    match launch:
+        case Launch.SERVICE:
+            return SERVICE_CLOSE_HINT
+        case Launch.CONSOLE:
+            return CONSOLE_CLOSE_HINT
 
 
 class LogPane(Protocol):

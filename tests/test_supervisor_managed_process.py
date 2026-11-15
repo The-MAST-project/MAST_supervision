@@ -14,16 +14,16 @@ import supervision.managed as managed_module
 from supervision.backoff import Backoff
 from supervision.clock import Clock
 from supervision.managed import (
-    SPAWN_FLAGS,
     STARTUP_GRACE_SECONDS,
     FoundProcess,
     ManagedProcess,
     OsProcessApi,
     RestartPolicy,
     names_argument,
+    spawn_flags,
 )
 from supervision.probes import HealthResult
-from supervision.state import OpState, ProcessState, ProcessStatus, Severity, SupervisionMode
+from supervision.state import Launch, OpState, ProcessState, ProcessStatus, Severity, SupervisionMode
 
 T0 = datetime(2026, 10, 8, 18, 0, tzinfo=UTC)
 OURS = 1
@@ -605,9 +605,9 @@ def test_a_console_child_gets_a_console_of_its_own(monkeypatch) -> None:
 
     OsProcessApi().spawn(["ps3cli.exe"], Path("C:/ps3cli"))
 
-    assert seen["creationflags"] == SPAWN_FLAGS
+    assert seen["creationflags"] == spawn_flags(Launch.CONSOLE)
     if sys.platform == "win32":
-        assert SPAWN_FLAGS & subprocess.CREATE_NO_WINDOW
+        assert spawn_flags(Launch.CONSOLE) & subprocess.CREATE_NO_WINDOW
 
 
 # --- a stop on request: terminate, grace, kill, and never a respawn --------------------------
