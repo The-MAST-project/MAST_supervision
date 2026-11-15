@@ -110,3 +110,23 @@ jobs:
 
       - name: Lint
         run: uv run --only-group dev ruff check .
+
+  # The installer under install/ is the one place `nssm install mast-service` happens.
+  # Windows PowerShell 5.1, the fleet's, with MAST_provisioning's pinned analyzer.
+  pssa:
+    name: pssa
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: PSScriptAnalyzer
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+          Import-Module PSScriptAnalyzer -RequiredVersion 1.25.0
+          $findings = @(Invoke-ScriptAnalyzer -Path install -Recurse -Settings PSScriptAnalyzerSettings.psd1)
+          $findings | Format-Table RuleName, Severity, ScriptName, Line, Message -AutoSize -Wrap | Out-String -Width 220 | Write-Host
+          Write-Host ("{0} finding(s)" -f $findings.Count)
+          if ($findings.Count -gt 0) { exit 1 }
