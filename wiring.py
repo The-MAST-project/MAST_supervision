@@ -120,5 +120,5 @@ def real_wiring(role: str, env: Mapping[str, str], home: Path, launch: Launch = 
         heartbeat_seconds=SupervisorConfig().heartbeat_interval_seconds,
         ramdisk=reviver,
         # Only a unit has a lifecycle shutdown that closes its covers; a spec app reports no opstate.
-        app_shutdown=(lambda port: shut_down_if_covers_may_be_open(port, role)) if role == "unit" else None,
+        app_shutdown=(lambda port, last: shut_down_if_covers_may_be_open(port, role, last)) if role == "unit" else None,
     )

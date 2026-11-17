@@ -262,15 +262,21 @@ def shutdown_app(
     return ShutdownOutcome(False, f"not shut down within {wait:g}s; last: {last}")
 
 
-def shut_down_if_covers_may_be_open(port: int, role: str, host: str = LOCALHOST) -> ShutdownOutcome | None:
+def shut_down_if_covers_may_be_open(
+    port: int, role: str, last_opstate: OpState | None, host: str = LOCALHOST
+) -> ShutdownOutcome | None:
     """Read the app's status now and, when :func:`may_have_covers_open`, shut it down and wait.
 
     ``None`` when no shutdown is due. Read fresh, not from the row's last probe, which can be a
-    probe interval old: a startup sent just before the stop would otherwise be missed.
+    probe interval old: a startup sent just before the stop would otherwise be missed. A status that
+    cannot be read now falls back on ``last_opstate``, the row's last healthy probe: a status read
+    waits on PHD2 and can time out while ``shutdown`` would still be taken.
     """
     result = probe_app(port, role, host)
     if not result.healthy:
-        return ShutdownOutcome(False, f"status unreadable ({result.detail}); no shutdown sent")
+        if last_opstate is not OpState.STARTED_UP:
+            return ShutdownOutcome(False, f"status unreadable ({result.detail}); no shutdown sent")
+        result = HealthResult(True, f"last seen {last_opstate}, status now unreadable ({result.detail})", last_opstate)
     if not may_have_covers_open(result):
         return None
     outcome = shutdown_app(port, role, host)

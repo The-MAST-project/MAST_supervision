@@ -58,7 +58,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -79,6 +79,7 @@ from supervision.state import (
     ControlAnswer,
     Launch,
     OpMode,
+    OpState,
     Phase,
     ProcessState,
     ProcessStatus,
@@ -163,8 +164,9 @@ class Wiring:
     heartbeat_seconds: float  # until the configuration says otherwise
     submit: Submit | None = None  # how probes run; None: each row's own executor
     ramdisk: RamdiskReviver | None = None  # None: the RAM disk is reported, never revived
-    # The app's port -> its shutdown when its covers may be open, else None; None here: never sent.
-    app_shutdown: Callable[[int], ShutdownOutcome | None] | None = None
+    # (the app's port, its last probed opstate) -> its shutdown when its covers may be open, else
+    # None; None here: never sent.
+    app_shutdown: Callable[[int, OpState | None], ShutdownOutcome | None] | None = None
     submit_shutdown: SubmitShutdown | None = None  # how a hold's shutdown runs off the loop; None: a thread of its own
     sleep: Callable[[float], None] = time.sleep  # between the teardown's ticks
 
@@ -270,6 +272,21 @@ class _PendingHold:
     reason: str
 
 
+def _on_daemon_thread(work: Callable[[], ShutdownOutcome | None]) -> Future[ShutdownOutcome | None]:
+    """Run ``work`` on a daemon thread: a pool's workers are joined at exit, so a supervisor stopped
+    during a hold would wait out the app's shutdown before it could exit."""
+    future: Future[ShutdownOutcome | None] = Future()
+
+    def run() -> None:
+        try:
+            future.set_result(work())
+        except BaseException as e:  # noqa: BLE001 -- handed to the loop, which logs it and stops the app
+            future.set_exception(e)
+
+    threading.Thread(target=run, name="app-shutdown-check", daemon=True).start()
+    return future
+
+
 def _log_shutdown(outcome: ShutdownOutcome | None, who: str) -> None:
     if outcome is None:
         return
@@ -307,7 +324,6 @@ class Supervisor:
         self._requests: queue.SimpleQueue[_Request] = queue.SimpleQueue()
         self._held: set[str] = set()
         self._pending_hold: _PendingHold | None = None
-        self._shutdown_executor: ThreadPoolExecutor | None = None
         self.snapshot = self._build_snapshot()
 
     def wall_clock(self) -> datetime:
@@ -345,14 +361,13 @@ class Supervisor:
         Every wait is bounded: a row's stop ends ``stopped``, or ``blocked`` once its program
         has refused terminate or survived kill, and then the next program is stopped.
         """
-        self._pending_hold = None  # the teardown sends the app its own shutdown
         rows = {row.name: row for row in self._rows}
         for name in TEARDOWN_ORDER:
             row = rows.get(name)
             if row is None:
                 continue
-            if name == APP and self._wiring.app_shutdown is not None:
-                _log_shutdown(self._wiring.app_shutdown(self._require_loaded().app_port), "app")
+            if name == APP:
+                self._shut_down_app(row.tick())
             row.stop(TEARDOWN_REASON)
             while True:
                 self._tick_rows()
@@ -360,6 +375,13 @@ class Supervisor:
                 if row.stopped:
                     break
                 self._wiring.sleep(TEARDOWN_TICK_SECONDS)
+
+    def _shut_down_app(self, status: ProcessStatus) -> None:
+        """Run the shutdown check on a running app and wait for it; on the loop, which is ending."""
+        shutdown = self._wiring.app_shutdown
+        if shutdown is None or status.pid is None:
+            return
+        _log_shutdown(shutdown(self._require_loaded().app_port, status.opstate), "app")
 
     def request_program(self, name: str, action: ProgramAction, requested_by: str) -> ControlAnswer:
         """Queue a stop or start of ``name`` for the next tick. Safe from any thread: it reads only
@@ -437,10 +459,11 @@ class Supervisor:
         if self._pending_hold is not None:
             return True
         shutdown = self._wiring.app_shutdown
-        if shutdown is None:
+        status = next((s for s in self._statuses if s.name == APP), None)
+        if shutdown is None or status is None or status.pid is None:
             return False
-        port = self._require_loaded().app_port
-        self._pending_hold = _PendingHold(self._submit_shutdown(lambda: shutdown(port)), reason)
+        port, last = self._require_loaded().app_port, status.opstate
+        self._pending_hold = _PendingHold(self._submit_shutdown(lambda: shutdown(port, last)), reason)
         return True
 
     def _finish_hold(self) -> None:
@@ -461,9 +484,7 @@ class Supervisor:
     def _submit_shutdown(self, work: Callable[[], ShutdownOutcome | None]) -> Future[ShutdownOutcome | None]:
         if self._wiring.submit_shutdown is not None:
             return self._wiring.submit_shutdown(work)
-        if self._shutdown_executor is None:
-            self._shutdown_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="app-shutdown")
-        return self._shutdown_executor.submit(work)
+        return _on_daemon_thread(work)
 
     # --- phases ------------------------------------------------------------------------------
 

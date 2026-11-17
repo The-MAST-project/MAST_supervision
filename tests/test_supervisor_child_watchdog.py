@@ -278,8 +278,9 @@ def test_the_mutex_is_taken_before_anything_else() -> None:
 
 
 def test_the_grace_covers_the_supervisors_whole_teardown() -> None:
-    """The copies the grace is built from, pinned to their sources: the app's shutdown wait,
-    terminate-then-kill for each program in the teardown, and a probe the loop waits for at exit."""
+    """The copies the grace is built from, pinned to their sources: the status read that decides the
+    app's shutdown, the shutdown's wait, terminate-then-kill for each program in the teardown, and a
+    probe the loop waits for at exit."""
     from common.config.supervisor import SupervisorConfig
     from supervision import probes, supervisor
 
@@ -290,7 +291,7 @@ def test_the_grace_covers_the_supervisors_whole_teardown() -> None:
     assert (
         probes.APP_SHUTDOWN_WAIT_SECONDS
         + len(supervisor.TEARDOWN_ORDER) * 2 * service.PROGRAM_STOP_GRACE_SECONDS
-        + probes.APP_STATUS_TIMEOUT_SECONDS
+        + 2 * probes.APP_STATUS_TIMEOUT_SECONDS
     ) < SUPERVISOR_STOP_GRACE_SECONDS
 
 

@@ -55,6 +55,8 @@ approved tentatively on 2026-11-12 (T3 and D3 there).
   the unit's 120 s abort wait plus its 70 s settle bound). Then the app is stopped whatever the
   outcome. Under `initialized`, `shutdown` or no reported state, nothing is sent. Only a unit is
   wired with it; a spec app reports no `opstate`.
+  *Refined by `2026-11-17-a-hold-or-a-teardown-shuts-down-an-app-whose-covers-may-be-open`: the
+  decision is now read fresh at stop time and also covers a startup or a shutdown under way.*
 - **A watched app (`development`) is torn down too**, as the design's table says a service stop
   stops the app; its row shows `stopped` rather than `not_supervised` afterwards.
 

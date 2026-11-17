@@ -377,14 +377,14 @@ def test_a_shutdown_still_closing_the_covers_is_not_done() -> None:
 
 def test_a_shutdown_check_on_an_idle_unit_sends_nothing() -> None:
     with unit_app(start={"opstate": "initialized", "activities_verbal": None}) as (port, seen):
-        assert shut_down_if_covers_may_be_open(port, "unit", HOST) is None
+        assert shut_down_if_covers_may_be_open(port, "unit", None, HOST) is None
 
     assert seen == ["GET /mast/api/v1/unit/status"]
 
 
 def test_a_shutdown_check_on_a_unit_starting_up_shuts_it_down() -> None:
     with unit_app(start={"opstate": "shutdown", "activities_verbal": ["StartingUp"]}) as (port, seen):
-        outcome = shut_down_if_covers_may_be_open(port, "unit", HOST)
+        outcome = shut_down_if_covers_may_be_open(port, "unit", None, HOST)
 
     assert outcome is not None
     assert outcome.completed
@@ -392,8 +392,27 @@ def test_a_shutdown_check_on_a_unit_starting_up_shuts_it_down() -> None:
     assert "PUT /mast/api/v1/unit/shutdown" in seen
 
 
-def test_a_shutdown_check_that_cannot_read_the_status_sends_nothing() -> None:
-    outcome = shut_down_if_covers_may_be_open(closed_port(), "unit", HOST)
+def test_a_shutdown_check_that_cannot_read_the_status_falls_back_on_the_last_opstate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A status read waits on PHD2 and can time out while ``shutdown`` is still taken."""
+    from supervision import probes
+
+    real = probes.probe_app
+    reads = iter([HealthResult(False, "no answer")])
+    monkeypatch.setattr(probes, "probe_app", lambda *a, **k: next(reads, None) or real(*a, **k))
+    with unit_app() as (port, seen):
+        outcome = probes.shut_down_if_covers_may_be_open(port, "unit", OpState.STARTED_UP, HOST)
+
+    assert outcome is not None
+    assert outcome.completed
+    assert outcome.detail.startswith("was last seen startedup, status now unreadable (no answer)")
+    assert "PUT /mast/api/v1/unit/shutdown" in seen
+
+
+@pytest.mark.parametrize("last", [OpState.INITIALIZED, OpState.SHUT_DOWN, None])
+def test_a_shutdown_check_that_cannot_read_the_status_sends_nothing(last: OpState | None) -> None:
+    outcome = shut_down_if_covers_may_be_open(closed_port(), "unit", last, HOST)
 
     assert outcome is not None
     assert not outcome.completed

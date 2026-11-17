@@ -162,6 +162,7 @@ class World:
     app_starting_up: bool = False  # a startup is running: covers may be opening whatever the opstate
     defer_shutdowns: bool = False  # a hold's shutdown check waits until the test completes it
     deferred: list[tuple[Future, ShutdownOutcome | None]] = field(default_factory=list)
+    checks: list[OpState | None] = field(default_factory=list)  # each shutdown check, by the opstate it was given
 
     def load_config(self) -> LoadedConfig:
         self.config_attempts += 1
@@ -192,8 +193,9 @@ class World:
             return HEALTHY
         return HealthResult(True, f"opstate={self.app_opstate}", self.app_opstate)
 
-    def shutdown_app(self, port: int) -> ShutdownOutcome | None:
+    def shutdown_app(self, port: int, last_opstate: OpState | None) -> ShutdownOutcome | None:
         """Stands in for ``shut_down_if_covers_may_be_open``, whose rule ``test_supervisor_probes`` covers."""
+        self.checks.append(last_opstate)
         if self.app_opstate is not OpState.STARTED_UP and not self.app_starting_up:
             return None
         self.api.events.append(f"shutdown {port}")
@@ -823,6 +825,38 @@ def test_a_second_hold_while_the_app_shuts_down_sends_no_second_shutdown() -> No
     ticks(world, supervisor, 2, step=60.0)
 
     assert world.api.events == [f"shutdown {APP_PORT}"]
+
+
+def test_a_service_stop_while_a_held_app_shuts_down_runs_its_own_check() -> None:
+    world, supervisor = _running_unit(app_opstate=OpState.STARTED_UP, defer_shutdowns=True)
+    supervisor.request_program("app", ProgramAction.STOP, ASKER)
+    ticks(world, supervisor, 2, step=60.0)
+
+    _tear_down(supervisor)
+
+    assert world.checks == [OpState.STARTED_UP, OpState.STARTED_UP]
+    assert world.api.events == [f"shutdown {APP_PORT}", f"shutdown {APP_PORT}", *TORN_DOWN_IN_ORDER]
+
+
+def test_an_app_already_down_gets_no_check() -> None:
+    """A held app that is stopped has no process to ask: a teardown sends it nothing."""
+    world, supervisor = _running_unit()
+    supervisor.request_program("app", ProgramAction.STOP, ASKER)
+    ticks(world, supervisor, 3, step=60.0)
+    assert len(world.checks) == 1
+
+    _tear_down(supervisor)
+
+    assert len(world.checks) == 1
+
+
+def test_the_check_is_given_the_apps_last_opstate() -> None:
+    """Its fallback when the status cannot be read at stop time."""
+    world, supervisor = _running_unit(app_opstate=OpState.STARTED_UP)
+
+    _tear_down(supervisor)
+
+    assert world.checks == [OpState.STARTED_UP]
 
 
 def test_a_release_while_the_app_shuts_down_leaves_it_running() -> None:
