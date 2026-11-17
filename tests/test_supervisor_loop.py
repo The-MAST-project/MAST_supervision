@@ -159,6 +159,9 @@ class World:
     ramdisk_runs: list[list[str]] = field(default_factory=list)
     full_set: bool = False  # PWI4, PHD2 observed and ps3cli, as a unit is configured
     app_opstate: OpState | None = None
+    app_starting_up: bool = False  # a startup is running: covers may be opening whatever the opstate
+    defer_shutdowns: bool = False  # a hold's shutdown check waits until the test completes it
+    deferred: list[tuple[Future, ShutdownOutcome | None]] = field(default_factory=list)
 
     def load_config(self) -> LoadedConfig:
         self.config_attempts += 1
@@ -189,9 +192,24 @@ class World:
             return HEALTHY
         return HealthResult(True, f"opstate={self.app_opstate}", self.app_opstate)
 
-    def shutdown_app(self, port: int) -> ShutdownOutcome:
+    def shutdown_app(self, port: int) -> ShutdownOutcome | None:
+        """Stands in for ``shut_down_if_covers_may_be_open``, whose rule ``test_supervisor_probes`` covers."""
+        if self.app_opstate is not OpState.STARTED_UP and not self.app_starting_up:
+            return None
         self.api.events.append(f"shutdown {port}")
         return ShutdownOutcome(True, "opstate=shutdown")
+
+    def submit_shutdown(self, work) -> Future:
+        if not self.defer_shutdowns:
+            return run_now(work)
+        future: Future = Future()
+        self.deferred.append((future, work()))
+        return future
+
+    def complete_shutdowns(self) -> None:
+        for future, outcome in self.deferred:
+            future.set_result(outcome)
+        self.deferred.clear()
 
     def ramdisk_probe(self) -> ProbeResult:
         assert self.ramdisk is not None
@@ -228,6 +246,7 @@ class World:
             submit=run_now,
             ramdisk=reviver,
             app_shutdown=self.shutdown_app,
+            submit_shutdown=self.submit_shutdown,
             sleep=self.fake.advance,
         )
         return Supervisor(self.role, "mast07", TOP, ENV, wiring, no_app=self.no_app)
@@ -643,6 +662,15 @@ def test_a_started_up_app_is_shut_down_before_it_is_stopped() -> None:
     assert world.api.events == [f"shutdown {APP_PORT}", *TORN_DOWN_IN_ORDER]
 
 
+def test_an_app_starting_up_is_shut_down_before_it_is_stopped() -> None:
+    """Its covers may be opening: a startup under way reports ``initialized`` until it ends."""
+    world, supervisor = _running_unit(app_opstate=OpState.INITIALIZED, app_starting_up=True)
+
+    _tear_down(supervisor)
+
+    assert world.api.events == [f"shutdown {APP_PORT}", *TORN_DOWN_IN_ORDER]
+
+
 @pytest.mark.parametrize("opstate", [OpState.INITIALIZED, OpState.SHUT_DOWN, None])
 def test_an_app_not_started_up_is_never_sent_a_shutdown(opstate: OpState | None) -> None:
     world, supervisor = _running_unit(app_opstate=opstate)
@@ -744,6 +772,72 @@ def test_the_production_app_can_be_held() -> None:
 
     assert row(supervisor, "app").state is ProcessState.STOPPED
     assert len(world.api.spawned("app.py")) == 1
+
+
+@pytest.mark.parametrize(("opstate", "starting_up"), [(OpState.STARTED_UP, False), (OpState.INITIALIZED, True)])
+def test_a_held_app_that_may_have_its_covers_open_is_shut_down_first(opstate: OpState, starting_up: bool) -> None:
+    world, supervisor = _running_unit(app_opstate=opstate, app_starting_up=starting_up)
+
+    supervisor.request_program("app", ProgramAction.STOP, ASKER)
+    ticks(world, supervisor, 3, step=60.0)
+
+    assert world.api.events == [f"shutdown {APP_PORT}", "terminate app.py"]
+    assert row(supervisor, "app").state is ProcessState.STOPPED
+    assert supervisor.snapshot.held == ("app",)
+
+
+@pytest.mark.parametrize("opstate", [OpState.INITIALIZED, OpState.SHUT_DOWN, None])
+def test_a_held_app_that_is_not_started_up_is_stopped_at_once(opstate: OpState | None) -> None:
+    world, supervisor = _running_unit(app_opstate=opstate)
+
+    supervisor.request_program("app", ProgramAction.STOP, ASKER)
+    ticks(world, supervisor, 3, step=60.0)
+
+    assert world.api.events == ["terminate app.py"]
+
+
+def test_the_loop_keeps_ticking_while_a_held_app_shuts_down() -> None:
+    world, supervisor = _running_unit(app_opstate=OpState.STARTED_UP, defer_shutdowns=True)
+
+    supervisor.request_program("app", ProgramAction.STOP, ASKER)
+    before = supervisor.snapshot.taken_at
+    ticks(world, supervisor, 5, step=60.0)
+
+    assert supervisor.snapshot.taken_at > before
+    assert world.api.events == [f"shutdown {APP_PORT}"]
+    assert row(supervisor, "app").state is not ProcessState.STOPPED
+
+    world.complete_shutdowns()
+    ticks(world, supervisor, 2, step=60.0)
+
+    assert world.api.events == [f"shutdown {APP_PORT}", "terminate app.py"]
+    assert row(supervisor, "app").state is ProcessState.STOPPED
+
+
+def test_a_second_hold_while_the_app_shuts_down_sends_no_second_shutdown() -> None:
+    world, supervisor = _running_unit(app_opstate=OpState.STARTED_UP, defer_shutdowns=True)
+
+    supervisor.request_program("app", ProgramAction.STOP, ASKER)
+    ticks(world, supervisor, 2, step=60.0)
+    supervisor.request_program("app", ProgramAction.STOP, ASKER)
+    ticks(world, supervisor, 2, step=60.0)
+
+    assert world.api.events == [f"shutdown {APP_PORT}"]
+
+
+def test_a_release_while_the_app_shuts_down_leaves_it_running() -> None:
+    world, supervisor = _running_unit(app_opstate=OpState.STARTED_UP, defer_shutdowns=True)
+
+    supervisor.request_program("app", ProgramAction.STOP, ASKER)
+    ticks(world, supervisor, 2, step=60.0)
+    supervisor.request_program("app", ProgramAction.START, ASKER)
+    ticks(world, supervisor, 2, step=60.0)
+    world.complete_shutdowns()
+    ticks(world, supervisor, 3, step=60.0)
+
+    assert world.api.events == [f"shutdown {APP_PORT}"]
+    assert row(supervisor, "app").state is not ProcessState.STOPPED
+    assert supervisor.snapshot.held == ()
 
 
 @pytest.mark.parametrize("action", list(ProgramAction))
