@@ -55,7 +55,7 @@ ${FAILURE_RESTARTS}         = 3
 # whole teardown, derived there) plus a margin for service.py to close the job and exit.
 # tests/test_install_mast_service.py keeps the grace equal to service.py's. The console must
 # stay: NSSM's Ctrl+C needs one to arrive on.
-${SUPERVISOR_STOP_GRACE_SECONDS} = 380
+${SUPERVISOR_STOP_GRACE_SECONDS} = 450
 ${STOP_MARGIN_SECONDS}           = 40
 ${STOP_CONSOLE_TIMEOUT_MS}       = (${SUPERVISOR_STOP_GRACE_SECONDS} + ${STOP_MARGIN_SECONDS}) * ${MS_PER_SECOND}
 ${NO_CONSOLE}                    = 0

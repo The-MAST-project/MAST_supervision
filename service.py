@@ -69,14 +69,15 @@ STABLE_RUN_SECONDS = 60.0
 # supervisor.py import common.mast_logging, which builds a Filer. Each copy is pinned to its
 # source by a test.
 APP_SHUTDOWN_WAIT_SECONDS = 200.0  # probes.APP_SHUTDOWN_WAIT_SECONDS: the app's own shutdown
-APP_STATUS_TIMEOUT_SECONDS = 70.0  # probes.APP_STATUS_TIMEOUT_SECONDS: a probe the loop waits for at exit
+APP_STATUS_TIMEOUT_SECONDS = 70.0  # probes.APP_STATUS_TIMEOUT_SECONDS: one app status read, at most
+APP_STATUS_READS = 2  # the read that decides the app's shutdown, and a probe the loop waits for at exit
 TEARDOWN_PROGRAMS = 4  # len(supervisor.TEARDOWN_ORDER)
 PROGRAM_STOP_GRACE_SECONDS = 10.0  # SupervisorConfig.stop_grace_seconds' default: terminate, then kill
 TEARDOWN_MARGIN_SECONDS = 30.0
 SUPERVISOR_STOP_GRACE_SECONDS = (
     APP_SHUTDOWN_WAIT_SECONDS
     + TEARDOWN_PROGRAMS * 2 * PROGRAM_STOP_GRACE_SECONDS
-    + APP_STATUS_TIMEOUT_SECONDS
+    + APP_STATUS_READS * APP_STATUS_TIMEOUT_SECONDS
     + TEARDOWN_MARGIN_SECONDS
 )
 

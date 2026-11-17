@@ -58,6 +58,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -104,6 +105,8 @@ TEARDOWN_ORDER = (APP, "phd2", "pwi4", "ps3cli")
 TEARDOWN_REASON = "the supervisor is stopping"
 TEARDOWN_TICK_SECONDS = 1.0
 HOLD_REASON = "held: stop requested by {by}"
+
+SubmitShutdown = Callable[[Callable[[], ShutdownOutcome | None]], "Future[ShutdownOutcome | None]"]
 
 
 class StopFlavor(StrEnum):
@@ -161,7 +164,10 @@ class Wiring:
     heartbeat_seconds: float  # until the configuration says otherwise
     submit: Submit | None = None  # how probes run; None: each row's own executor
     ramdisk: RamdiskReviver | None = None  # None: the RAM disk is reported, never revived
-    app_shutdown: Callable[[int], ShutdownOutcome] | None = None  # the app's port -> its shutdown; None: never sent
+    # (the app's port, its last probed opstate) -> its shutdown when its covers may be open, else
+    # None; None here: never sent.
+    app_shutdown: Callable[[int, OpState | None], ShutdownOutcome | None] | None = None
+    submit_shutdown: SubmitShutdown | None = None  # how a hold's shutdown runs off the loop; None: a thread of its own
     sleep: Callable[[float], None] = time.sleep  # between the teardown's ticks
 
 
@@ -258,6 +264,38 @@ class _Request:
     requested_by: str
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingHold:
+    """A hold of the app waiting on its shutdown, which runs off the loop."""
+
+    shutdown: Future[ShutdownOutcome | None]
+    reason: str
+
+
+def _on_daemon_thread(work: Callable[[], ShutdownOutcome | None]) -> Future[ShutdownOutcome | None]:
+    """Run ``work`` on a daemon thread: a pool's workers are joined at exit, so a supervisor stopped
+    during a hold would wait out the app's shutdown before it could exit."""
+    future: Future[ShutdownOutcome | None] = Future()
+
+    def run() -> None:
+        try:
+            future.set_result(work())
+        except BaseException as e:  # noqa: BLE001 -- handed to the loop, which logs it and stops the app
+            future.set_exception(e)
+
+    threading.Thread(target=run, name="app-shutdown-check", daemon=True).start()
+    return future
+
+
+def _log_shutdown(outcome: ShutdownOutcome | None, who: str) -> None:
+    if outcome is None:
+        return
+    if outcome.completed:
+        logger.info(f"{who} shut down before it is stopped: {outcome.detail}")
+    else:
+        logger.warning(f"{who} shutdown not confirmed ({outcome.detail}); stopping it anyway")
+
+
 @dataclass(slots=True)
 class _ConfigAttempts:
     backoff: Backoff = field(default_factory=lambda: Backoff(CONFIG_RETRY_FIRST_SECONDS, CONFIG_RETRY_CAP_SECONDS))
@@ -285,6 +323,7 @@ class Supervisor:
         self._heartbeat_due = 0.0
         self._requests: queue.SimpleQueue[_Request] = queue.SimpleQueue()
         self._held: set[str] = set()
+        self._pending_hold: _PendingHold | None = None
         self.snapshot = self._build_snapshot()
 
     def wall_clock(self) -> datetime:
@@ -338,17 +377,11 @@ class Supervisor:
                 self._wiring.sleep(TEARDOWN_TICK_SECONDS)
 
     def _shut_down_app(self, status: ProcessStatus) -> None:
-        """Send a started-up app its ``shutdown`` and wait for it; never one that is not started up."""
+        """Run the shutdown check on a running app and wait for it; on the loop, which is ending."""
         shutdown = self._wiring.app_shutdown
-        if shutdown is None or status.opstate is not OpState.STARTED_UP:
+        if shutdown is None or status.pid is None:
             return
-        port = self._require_loaded().app_port
-        logger.info(f"app is {status.opstate}: sending it shutdown before stopping it")
-        outcome = shutdown(port)
-        if outcome.completed:
-            logger.info(f"app shut down: {outcome.detail}")
-        else:
-            logger.warning(f"app shutdown not confirmed ({outcome.detail}); stopping it anyway")
+        _log_shutdown(shutdown(self._require_loaded().app_port, status.opstate), "app")
 
     def request_program(self, name: str, action: ProgramAction, requested_by: str) -> ControlAnswer:
         """Queue a stop or start of ``name`` for the next tick. Safe from any thread: it reads only
@@ -364,6 +397,7 @@ class Supervisor:
     def tick(self) -> None:
         now = self._clock.monotonic()
         self._apply_requests()
+        self._finish_hold()
         match self._phase:
             case Phase.STARTING:
                 self._enter(Phase.WAITING_FOR_RESOURCES, now)
@@ -404,11 +438,53 @@ class Supervisor:
             logger.info(f"{request.name}: {request.action} requested by {request.requested_by}")
             match request.action:
                 case ProgramAction.STOP:
-                    row.stop(HOLD_REASON.format(by=request.requested_by))
                     self._held.add(request.name)
+                    reason = HOLD_REASON.format(by=request.requested_by)
+                    if request.name != APP or not self._hold_after_shutdown(reason):
+                        row.stop(reason)
                 case ProgramAction.START:
+                    if request.name == APP and self._pending_hold is not None:
+                        logger.info("app released while its shutdown runs: it is left running, and shut down")
+                        self._pending_hold = None
                     row.release()
                     self._held.discard(request.name)
+
+    def _hold_after_shutdown(self, reason: str) -> bool:
+        """True when the app's stop waits on its shutdown check, started now or already under way.
+
+        The check reads the app's status and, when its covers may be open, shuts it down: up to
+        ``APP_STATUS_TIMEOUT_SECONDS`` plus ``APP_SHUTDOWN_WAIT_SECONDS``. It runs off the loop,
+        since every row, the resource probes and the published snapshot wait on the loop's thread.
+        """
+        if self._pending_hold is not None:
+            return True
+        shutdown = self._wiring.app_shutdown
+        status = next((s for s in self._statuses if s.name == APP), None)
+        if shutdown is None or status is None or status.pid is None:
+            return False
+        port, last = self._require_loaded().app_port, status.opstate
+        self._pending_hold = _PendingHold(self._submit_shutdown(lambda: shutdown(port, last)), reason)
+        return True
+
+    def _finish_hold(self) -> None:
+        """Stop the held app once its shutdown check has ended, whatever it found."""
+        pending = self._pending_hold
+        if pending is None or not pending.shutdown.done():
+            return
+        self._pending_hold = None
+        try:
+            outcome = pending.shutdown.result()
+        except Exception as e:  # noqa: BLE001 -- the hold still stops the app; the operator asked for it down
+            outcome = ShutdownOutcome(False, f"shutdown check raised {type(e).__name__}: {e}")
+        _log_shutdown(outcome, "held app")
+        row = next((r for r in self._rows if r.name == APP), None)
+        if row is not None:
+            row.stop(pending.reason)
+
+    def _submit_shutdown(self, work: Callable[[], ShutdownOutcome | None]) -> Future[ShutdownOutcome | None]:
+        if self._wiring.submit_shutdown is not None:
+            return self._wiring.submit_shutdown(work)
+        return _on_daemon_thread(work)
 
     # --- phases ------------------------------------------------------------------------------
 

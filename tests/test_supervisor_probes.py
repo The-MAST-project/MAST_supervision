@@ -13,12 +13,14 @@ from supervision.probes import (
     PHD2_REQUEST_ID,
     HealthResult,
     ShutdownOutcome,
+    may_have_covers_open,
     parse_pwi4_status,
     probe_app,
     probe_phd2,
     probe_ps3cli,
     probe_pwi4,
     pwi4_status_is_viable,
+    shut_down_if_covers_may_be_open,
     shutdown_app,
 )
 from supervision.state import OpState
@@ -219,6 +221,45 @@ def test_app_healthy_reports_its_opstate() -> None:
         assert probe_app(port, "unit", HOST) == HealthResult(True, "opstate=initialized", OpState.INITIALIZED)
 
 
+def test_an_app_starting_up_says_so() -> None:
+    """A startup under way still reports the opstate it started from; its activities say it runs."""
+    status = _status({"opstate": "shutdown", "activities_verbal": ["StartingUp", "Exposing"]})
+    with http_server(200, status) as port:
+        result = probe_app(port, "unit", HOST)
+    assert result == HealthResult(
+        True, "opstate=shutdown, StartingUp", OpState.SHUT_DOWN, frozenset({"StartingUp", "Exposing"})
+    )
+    assert result.starting_up
+
+
+@pytest.mark.parametrize("activities", [None, [], ["Exposing"]])
+def test_an_idle_unit_lists_no_lifecycle_change(activities: list[str] | None) -> None:
+    """An idle unit's ``activities_verbal`` is ``null``, not an empty list."""
+    with http_server(200, _status({"opstate": "initialized", "activities_verbal": activities})) as port:
+        result = probe_app(port, "unit", HOST)
+    assert result.healthy
+    assert not result.starting_up
+    assert not result.shutting_down
+
+
+@pytest.mark.parametrize(
+    ("opstate", "activities", "expected"),
+    [
+        (OpState.STARTED_UP, (), True),
+        (OpState.INITIALIZED, ("StartingUp",), True),
+        (OpState.SHUT_DOWN, ("StartingUp",), True),
+        (OpState.SHUT_DOWN, ("ShuttingDown",), True),
+        (OpState.INITIALIZED, ("ShuttingDown",), True),
+        (OpState.INITIALIZED, (), False),
+        (OpState.SHUT_DOWN, (), False),
+        (OpState.INITIALIZING, (), False),
+        (None, (), False),
+    ],
+)
+def test_which_apps_may_have_their_covers_open(opstate: OpState | None, activities: tuple[str, ...], expected: bool) -> None:
+    assert may_have_covers_open(HealthResult(True, "", opstate, frozenset(activities))) is expected
+
+
 def test_an_opstate_this_supervisor_does_not_know_is_shown_but_not_structured() -> None:
     with http_server(200, _status({"opstate": "running"})) as port:
         assert probe_app(port, "unit", HOST) == HealthResult(True, "opstate=running")
@@ -264,23 +305,33 @@ def test_app_unhealthy(status: int, body: bytes, reason: str) -> None:
 
 
 @contextmanager
-def unit_app(shuts_down: bool = True) -> Iterator[tuple[int, list[str]]]:
+def unit_app(
+    shuts_down: bool = True, start: dict | None = None, after_put: list[dict] | None = None
+) -> Iterator[tuple[int, list[str]]]:
     """A unit app: ``PUT .../shutdown`` is recorded and, when ``shuts_down``, its status says so next.
 
+    ``start`` is its status before the ``PUT`` (``startedup`` by default). ``after_put``, when
+    given, is the status each read after the ``PUT`` returns in turn, the last one repeating.
     Yields the port and the requests seen, as ``METHOD path``.
     """
     seen: list[str] = []
-    state = {"opstate": "startedup"}
+    state: dict = dict(start or {"opstate": "startedup"})
+    script = list(after_put or [])
+    put = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
         def do_PUT(self) -> None:  # noqa: N802 -- http.server's name
             seen.append(f"PUT {self.path}")
-            if shuts_down:
-                state["opstate"] = "shutdown"
+            put.set()
+            if shuts_down and not script:
+                state.update(opstate="shutdown", activities_verbal=None)
             self._answer(_status(None))
 
         def do_GET(self) -> None:  # noqa: N802 -- http.server's name
             seen.append(f"GET {self.path}")
+            if put.is_set() and script:
+                state.clear()
+                state.update(script.pop(0) if len(script) > 1 else script[0])
             self._answer(_status(dict(state)))
 
         def _answer(self, body: bytes) -> None:
@@ -310,6 +361,62 @@ def test_shutdown_is_sent_and_waited_for_until_the_app_reports_it() -> None:
     assert outcome == ShutdownOutcome(True, "opstate=shutdown")
     assert seen[0] == "PUT /mast/api/v1/unit/shutdown"
     assert seen[1] == "GET /mast/api/v1/unit/status"
+
+
+def test_a_shutdown_still_closing_the_covers_is_not_done() -> None:
+    """A unit shut down earlier reports ``shutdown`` from the first read; done is no ShuttingDown left."""
+    closing = {"opstate": "shutdown", "activities_verbal": ["ShuttingDown"]}
+    done = {"opstate": "shutdown", "activities_verbal": None}
+    start = {"opstate": "shutdown", "activities_verbal": ["StartingUp"]}
+    with unit_app(start=start, after_put=[closing, closing, done]) as (port, seen):
+        outcome = shutdown_app(port, "unit", HOST, wait=SHORT * 20, poll=POLL_SECONDS)
+
+    assert outcome == ShutdownOutcome(True, "opstate=shutdown")
+    assert seen.count("GET /mast/api/v1/unit/status") == 3
+
+
+def test_a_shutdown_check_on_an_idle_unit_sends_nothing() -> None:
+    with unit_app(start={"opstate": "initialized", "activities_verbal": None}) as (port, seen):
+        assert shut_down_if_covers_may_be_open(port, "unit", None, HOST) is None
+
+    assert seen == ["GET /mast/api/v1/unit/status"]
+
+
+def test_a_shutdown_check_on_a_unit_starting_up_shuts_it_down() -> None:
+    with unit_app(start={"opstate": "shutdown", "activities_verbal": ["StartingUp"]}) as (port, seen):
+        outcome = shut_down_if_covers_may_be_open(port, "unit", None, HOST)
+
+    assert outcome is not None
+    assert outcome.completed
+    assert outcome.detail.startswith("was opstate=shutdown, StartingUp")
+    assert "PUT /mast/api/v1/unit/shutdown" in seen
+
+
+def test_a_shutdown_check_that_cannot_read_the_status_falls_back_on_the_last_opstate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A status read waits on PHD2 and can time out while ``shutdown`` is still taken."""
+    from supervision import probes
+
+    real = probes.probe_app
+    reads = iter([HealthResult(False, "no answer")])
+    monkeypatch.setattr(probes, "probe_app", lambda *a, **k: next(reads, None) or real(*a, **k))
+    with unit_app() as (port, seen):
+        outcome = probes.shut_down_if_covers_may_be_open(port, "unit", OpState.STARTED_UP, HOST)
+
+    assert outcome is not None
+    assert outcome.completed
+    assert outcome.detail.startswith("was last seen startedup, status now unreadable (no answer)")
+    assert "PUT /mast/api/v1/unit/shutdown" in seen
+
+
+@pytest.mark.parametrize("last", [OpState.INITIALIZED, OpState.SHUT_DOWN, None])
+def test_a_shutdown_check_that_cannot_read_the_status_sends_nothing(last: OpState | None) -> None:
+    outcome = shut_down_if_covers_may_be_open(closed_port(), "unit", last, HOST)
+
+    assert outcome is not None
+    assert not outcome.completed
+    assert "no shutdown sent" in outcome.detail
 
 
 def test_a_shutdown_that_does_not_complete_is_bounded() -> None:

@@ -69,6 +69,13 @@ STATUS_PATHS = {
     "unit": f"{Const.BASE_UNIT_PATH}/status",
     "spec": f"{Const.BASE_SPEC_PATH}/status",
 }
+#: The unit's own activities while a lifecycle change runs (its status's top-level
+#: ``activities_verbal``). Its ``opstate`` changes only when the change ends: a startup reports the
+#: opstate it started from, ``initialized`` or ``shutdown``, until it is done, and a shutdown reports
+#: ``shutdown`` while its covers are still closing.
+STARTING_UP_ACTIVITY = "StartingUp"
+SHUTTING_DOWN_ACTIVITY = "ShuttingDown"
+
 SHUTDOWN_PATHS = {"unit": f"{Const.BASE_UNIT_PATH}/shutdown"}
 
 _opener = build_opener(ProxyHandler({}))
@@ -79,6 +86,15 @@ class HealthResult:
     healthy: bool
     detail: str = ""
     opstate: OpState | None = None  # the app's lifecycle state, when its status reports one this supervisor knows
+    activities: frozenset[str] = frozenset()  # the app's own activities, when its status lists them
+
+    @property
+    def starting_up(self) -> bool:
+        return STARTING_UP_ACTIVITY in self.activities
+
+    @property
+    def shutting_down(self) -> bool:
+        return SHUTTING_DOWN_ACTIVITY in self.activities
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,9 +215,23 @@ def probe_app(port: int, role: str, host: str = LOCALHOST, timeout: float = APP_
         return HealthResult(False, "status has no value")
     value = document["value"]
     reported = value.get("opstate") if isinstance(value, dict) else None
+    listed = value.get("activities_verbal") if isinstance(value, dict) else None  # None when idle
+    activities = frozenset(a for a in listed if isinstance(a, str)) if isinstance(listed, list) else frozenset()
     if not reported:
-        return HealthResult(True, "answering")
-    return HealthResult(True, f"opstate={reported}", OpState(reported) if reported in OpState else None)
+        return HealthResult(True, "answering", activities=activities)
+    lifecycle = sorted(activities & {STARTING_UP_ACTIVITY, SHUTTING_DOWN_ACTIVITY})
+    detail = ", ".join([f"opstate={reported}", *lifecycle])
+    return HealthResult(True, detail, OpState(reported) if reported in OpState else None, activities)
+
+
+def may_have_covers_open(result: HealthResult) -> bool:
+    """Started up, or with a startup or a shutdown running: an app to send ``shutdown`` before it is stopped.
+
+    Never one idle in ``initialized`` or ``shutdown``: ``shutdown`` on a never-started unit
+    connects its components and enables the axes. A unit takes a ``shutdown`` during a startup
+    (the startup then completes into ``shutdown``), and a second one during a shutdown is a no-op.
+    """
+    return result.opstate is OpState.STARTED_UP or result.starting_up or result.shutting_down
 
 
 def shutdown_app(
@@ -211,7 +241,11 @@ def shutdown_app(
     wait: float = APP_SHUTDOWN_WAIT_SECONDS,
     poll: float = APP_SHUTDOWN_POLL_SECONDS,
 ) -> ShutdownOutcome:
-    """``PUT`` the app's ``shutdown``, then read its status until it reports ``shutdown`` or ``wait`` runs out."""
+    """``PUT`` the app's ``shutdown``, then read its status until it is shut down or ``wait`` runs out.
+
+    Shut down is ``opstate`` ``shutdown`` with no shutdown still running: a unit that was shut down
+    earlier reports ``shutdown`` from its first status read on, while its covers are still closing.
+    """
     deadline = time.monotonic() + wait
     url = f"http://{host}:{port}{SHUTDOWN_PATHS[role]}"
     try:
@@ -222,7 +256,28 @@ def shutdown_app(
     while (remaining := deadline - time.monotonic()) > 0:
         result = probe_app(port, role, host, timeout=min(remaining, APP_STATUS_TIMEOUT_SECONDS))
         last = result.detail
-        if result.opstate is OpState.SHUT_DOWN:
+        if result.opstate is OpState.SHUT_DOWN and not result.shutting_down:
             return ShutdownOutcome(True, last)
         time.sleep(min(poll, max(deadline - time.monotonic(), 0.0)))
     return ShutdownOutcome(False, f"not shut down within {wait:g}s; last: {last}")
+
+
+def shut_down_if_covers_may_be_open(
+    port: int, role: str, last_opstate: OpState | None, host: str = LOCALHOST
+) -> ShutdownOutcome | None:
+    """Read the app's status now and, when :func:`may_have_covers_open`, shut it down and wait.
+
+    ``None`` when no shutdown is due. Read fresh, not from the row's last probe, which can be a
+    probe interval old: a startup sent just before the stop would otherwise be missed. A status that
+    cannot be read now falls back on ``last_opstate``, the row's last healthy probe: a status read
+    waits on PHD2 and can time out while ``shutdown`` would still be taken.
+    """
+    result = probe_app(port, role, host)
+    if not result.healthy:
+        if last_opstate is not OpState.STARTED_UP:
+            return ShutdownOutcome(False, f"status unreadable ({result.detail}); no shutdown sent")
+        result = HealthResult(True, f"last seen {last_opstate}, status now unreadable ({result.detail})", last_opstate)
+    if not may_have_covers_open(result):
+        return None
+    outcome = shutdown_app(port, role, host)
+    return ShutdownOutcome(outcome.completed, f"was {result.detail}; {outcome.detail}")
